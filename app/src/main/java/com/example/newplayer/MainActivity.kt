@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
@@ -36,6 +37,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -167,6 +170,9 @@ fun AppRoot(
     mediaController: MediaController?
 ) {
     val navController = rememberNavController()
+    val songs by repository.allSongs.collectAsState(initial = emptyList())
+    var showMenu by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -174,7 +180,29 @@ fun AppRoot(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.primary,
-                )
+                ),
+                actions = {
+                    if (songs.isNotEmpty()) {
+                        IconButton(onClick = { showMenu = !showMenu }) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "More options"
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Sync") },
+                                onClick = {
+                                    showMenu = false
+                                    onScanSongs()
+                                }
+                            )
+                        }
+                    }
+                }
             )
         },
         bottomBar = {
@@ -203,11 +231,13 @@ fun AppRoot(
             }
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { if (!isScanning) onScanSongs() }) {
-                if (isScanning) {
-                    CircularProgressIndicator(modifier = Modifier.size(28.dp))
-                } else {
-                    Icon(Icons.Default.Search, contentDescription = "Scan for songs")
+            if (songs.isEmpty()) {
+                FloatingActionButton(onClick = { if (!isScanning) onScanSongs() }) {
+                    if (isScanning) {
+                        CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                    } else {
+                        Icon(Icons.Default.Search, contentDescription = "Scan for songs")
+                    }
                 }
             }
         }
@@ -318,7 +348,7 @@ fun SongListScreen(
     val sortedSongs = songs.sortedBy { it.title }
 
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        if (isScanning) {
+        if (isScanning && songs.isEmpty()) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(8.dp))

@@ -306,7 +306,7 @@ fun AppRoot(
                 AlbumListScreen(repository, navController)
             }
             composable(Screen.Queue.route) {
-                QueueScreen(mediaController = mediaController)
+                QueueScreen(repository = repository, mediaController = mediaController)
             }
             composable("player") {
                 FullScreenPlayer(
@@ -410,7 +410,7 @@ fun MiniPlayer(mediaController: MediaController, onClick: () -> Unit) {
 }
 
 @Composable
-fun QueueScreen(mediaController: MediaController?) {
+fun QueueScreen(repository: LocalSongRepository, mediaController: MediaController?) {
     if (mediaController == null) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("Queue not available")
@@ -418,6 +418,8 @@ fun QueueScreen(mediaController: MediaController?) {
         return
     }
 
+    val songs by repository.allSongs.collectAsState(initial = emptyList())
+    val albums by repository.allAlbums.collectAsState(initial = emptyList())
     var timeline by remember { mutableStateOf(mediaController.currentTimeline) }
     var currentMediaItem by remember { mutableStateOf(mediaController.currentMediaItem) }
 
@@ -464,6 +466,8 @@ fun QueueScreen(mediaController: MediaController?) {
             key = { _, item -> item.mediaId }
         ) { index, item ->
             val isCurrentlyPlaying = item.mediaId == currentMediaItem?.mediaId
+            val song = songs.find { it.id.toString() == item.mediaId }
+            val album = if (song != null) albums.find { it.id == song.albumId } else null
 
             Row(
                 modifier = Modifier
@@ -479,7 +483,7 @@ fun QueueScreen(mediaController: MediaController?) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 AsyncImage(
-                    model = item.mediaMetadata.artworkUri,
+                    model = album?.artwork,
                     contentDescription = "Album artwork",
                     modifier = Modifier
                         .size(40.dp)

@@ -542,8 +542,9 @@ fun SongListScreen(
                         mediaController?.let { controller ->
                             val mediaItem = mediaItems.find { it.mediaId == song.id.toString() }
                             if (mediaItem != null) {
-                                val startIndex = mediaItems.indexOf(mediaItem)
-                                controller.setMediaItems(mediaItems, startIndex, 0)
+                                val newItemIndex = controller.mediaItemCount
+                                controller.addMediaItem(mediaItem)
+                                controller.seekTo(newItemIndex, 0L)
                                 controller.prepare()
                                 controller.play()
                             }
@@ -767,9 +768,9 @@ fun AlbumSongListScreen(
                             mediaController?.let { controller ->
                                 val mediaItem = mediaItems.find { it.mediaId == song.id.toString() }
                                 if (mediaItem != null) {
-                                    val startIndex = mediaItems.indexOf(mediaItem)
-
-                                    controller.setMediaItems(mediaItems, startIndex, 0)
+                                    val newItemIndex = controller.mediaItemCount
+                                    controller.addMediaItem(mediaItem)
+                                    controller.seekTo(newItemIndex, 0L)
                                     controller.prepare()
                                     controller.play()
                                 }

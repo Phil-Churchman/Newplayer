@@ -1,9 +1,13 @@
 package com.example.newplayer
 
+import android.Manifest
 import android.content.ComponentName
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -125,6 +129,31 @@ class MainActivity : ComponentActivity() {
                 val context = LocalContext.current
                 var mediaController by remember { mutableStateOf<MediaController?>(null) }
 
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission(),
+                    onResult = { isGranted: Boolean ->
+                        if (isGranted) {
+                            scope.launch {
+                                isScanning = true
+                                repository.scanForSongs()
+                                isScanning = false
+                            }
+                        }
+                    }
+                )
+
+                val scanAction = {
+                    if (context.checkSelfPermission(Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        scope.launch {
+                            isScanning = true
+                            repository.scanForSongs()
+                            isScanning = false
+                        }
+                    } else {
+                        permissionLauncher.launch(Manifest.permission.READ_MEDIA_AUDIO)
+                    }
+                }
+
                 DisposableEffect(context) {
                     val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
                     val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
@@ -144,9 +173,7 @@ class MainActivity : ComponentActivity() {
                     scope.launch {
                         val songsCount = repository.allSongs.first().size
                         if (songsCount == 0) {
-                            isScanning = true
-                            repository.scanForSongs()
-                            isScanning = false
+                            scanAction()
                         }
                     }
                 }
@@ -155,11 +182,7 @@ class MainActivity : ComponentActivity() {
                     repository = repository,
                     isScanning = isScanning,
                     onScanSongs = {
-                        scope.launch {
-                            isScanning = true
-                            repository.scanForSongs()
-                            isScanning = false
-                        }
+                        scanAction()
                     },
                     mediaController = mediaController
                 )

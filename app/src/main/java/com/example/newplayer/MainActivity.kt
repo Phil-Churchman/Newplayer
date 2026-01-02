@@ -268,6 +268,7 @@ fun AppRoot(
             Column {
                 mediaController?.let { controller ->
                     MiniPlayer(
+                        repository = repository,
                         mediaController = controller,
                         onClick = { navController.navigate("player") }
                     )
@@ -351,9 +352,16 @@ fun AppRoot(
 }
 
 @Composable
-fun MiniPlayer(mediaController: MediaController, onClick: () -> Unit) {
+fun MiniPlayer(repository: LocalSongRepository, mediaController: MediaController, onClick: () -> Unit) {
     var currentMediaItem by remember { mutableStateOf(mediaController.currentMediaItem) }
     var isPlaying by remember { mutableStateOf(mediaController.isPlaying) }
+
+    val songs by repository.allSongs.collectAsState(initial = emptyList())
+    val albums by repository.allAlbums.collectAsState(initial = emptyList())
+
+    val song = songs.find { it.id.toString() == currentMediaItem?.mediaId }
+    val album = if (song != null) albums.find { it.id == song.albumId } else null
+    val artwork = album?.artwork
 
     DisposableEffect(mediaController) {
         val listener = object : Player.Listener {
@@ -386,7 +394,7 @@ fun MiniPlayer(mediaController: MediaController, onClick: () -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         AsyncImage(
-            model = currentMediaItem?.mediaMetadata?.artworkUri,
+            model = artwork,
             contentDescription = "Album artwork",
             modifier = Modifier
                 .size(48.dp)

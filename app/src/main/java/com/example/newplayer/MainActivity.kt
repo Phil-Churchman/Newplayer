@@ -708,27 +708,27 @@ fun AlbumSongListScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },
+                actions = {
+                    if (songs.isNotEmpty()) {
+                        IconButton(onClick = {
+                            mediaController?.let { controller ->
+                                val albumMediaItems = mediaItems.filter { mediaItem -> songs.any { it.id.toString() == mediaItem.mediaId } }
+                                if (albumMediaItems.isNotEmpty()) {
+                                    controller.setMediaItems(albumMediaItems, 0, 0)
+                                    controller.prepare()
+                                    controller.play()
+                                }
+                            }
+                        }) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = "Play album")
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.primary,
                 )
             )
-        },
-        floatingActionButton = {
-            if (songs.isNotEmpty()) {
-                FloatingActionButton(onClick = {
-                    mediaController?.let { controller ->
-                        val albumMediaItems = mediaItems.filter { mediaItem -> songs.any { it.id.toString() == mediaItem.mediaId } }
-                        if (albumMediaItems.isNotEmpty()) {
-                            controller.setMediaItems(albumMediaItems, 0, 0)
-                            controller.prepare()
-                            controller.play()
-                        }
-                    }
-                }) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = "Play album")
-                }
-            }
         }
     ) { innerPadding ->
         LazyColumn(modifier = Modifier

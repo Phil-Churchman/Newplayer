@@ -9,38 +9,12 @@ class LocalSongRepository(
     private val context: Context,
     private val songDao: SongDao,
     private val artistDao: ArtistDao,
-    private val albumDao: AlbumDao,
-    private val localQueueDao: LocalQueueDao
+    private val albumDao: AlbumDao
 ) {
 
     val allSongs: Flow<List<Song>> = songDao.getAll()
     val allArtists: Flow<List<Artist>> = artistDao.getAll()
     val allAlbums: Flow<List<Album>> = albumDao.getAll()
-
-    // Queue Functions
-    val queue: Flow<List<LocalQueue>> = localQueueDao.getQueue()
-
-    suspend fun addToQueue(songId: Long) {
-        val currentQueue = queue.first()
-        val nextPosition = if (currentQueue.isEmpty()) 0 else currentQueue.maxOf { it.position } + 1
-        localQueueDao.addToQueue(LocalQueue(songId = songId, position = nextPosition))
-    }
-
-    suspend fun removeFromQueue(songId: Long) {
-        localQueueDao.removeFromQueue(songId)
-    }
-
-    suspend fun clearQueue() {
-        localQueueDao.clearQueue()
-    }
-
-    suspend fun setCurrent(songId: Long) {
-        localQueueDao.setCurrent(songId)
-    }
-
-    fun getCurrentSongInQueue(): Flow<LocalQueue?> {
-        return localQueueDao.getCurrentSong()
-    }
 
     fun getArtistNameById(artistId: Long): Flow<String?> {
         return artistDao.getArtistNameById(artistId)
@@ -62,15 +36,15 @@ class LocalSongRepository(
         if (text.isNullOrBlank()) return ""
         return text
             .replace("â€™", "'")
-            .replace("â€œ", "\"")
-            .replace("â€", "\"")
+            .replace("â€œ", """)
+            .replace("â€", """)
             .replace("â€“", "-")
             .replace("â€¦", "...")
             .replace("Ã¨", "è")
             .replace("’", "'")
             .replace("‘", "'")
-            .replace("“", "\"")
-            .replace("”", "\"")
+            .replace("“", """)
+            .replace("”", """)
             .replace("–", "-")
             .replace("…", "...")
             .trim()
@@ -152,7 +126,7 @@ class LocalSongRepository(
             val artistIdMap = artistDao.getAll().first().associate { it.name to it.id }
 
             val albumsToInsert = rawSongs
-                .groupBy { it.album } 
+                .groupBy { it.album }
                 .mapNotNull { (albumName, songsInAlbum) ->
                     val firstSong = songsInAlbum.first()
                     val artistId = artistIdMap[firstSong.albumArtist]

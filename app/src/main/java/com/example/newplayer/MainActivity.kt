@@ -79,6 +79,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
@@ -129,10 +130,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             NewPlayerTheme {
                 var isScanning by remember { mutableStateOf(false) }
-                var mediaItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
                 val scope = rememberCoroutineScope()
                 val context = LocalContext.current
                 var mediaController by remember { mutableStateOf<MediaController?>(null) }
+
+                val songs by repository.allSongs.collectAsState(initial = emptyList())
+                val mediaItems = remember(songs) {
+                    songs.map { song ->
+                        val metadata = MediaMetadata.Builder()
+                            .setTitle(song.title)
+                            .setArtist(song.artist)
+                            .build()
+                        MediaItem.Builder()
+                            .setMediaId(song.id.toString())
+                            .setUri(song.path)
+                            .setMediaMetadata(metadata)
+                            .build()
+                    }
+                }
 
                 val permissionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.RequestPermission(),
@@ -140,7 +155,7 @@ class MainActivity : ComponentActivity() {
                         if (isGranted) {
                             scope.launch {
                                 isScanning = true
-                                mediaItems = repository.scanForSongs()
+                                repository.scanForSongs()
                                 isScanning = false
                             }
                         }
@@ -151,7 +166,7 @@ class MainActivity : ComponentActivity() {
                     if (context.checkSelfPermission(Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         scope.launch {
                             isScanning = true
-                            mediaItems = repository.scanForSongs()
+                            repository.scanForSongs()
                             isScanning = false
                         }
                     } else {
@@ -179,10 +194,6 @@ class MainActivity : ComponentActivity() {
                         val songsCount = repository.allSongs.first().size
                         if (songsCount == 0) {
                             scanAction()
-                        } else {
-                            mediaItems = repository.allSongs.first().map { song ->
-                                MediaItem.fromUri(song.path)
-                            }
                         }
                     }
                 }

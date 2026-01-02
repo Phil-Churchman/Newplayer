@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -526,6 +527,16 @@ fun QueueScreen(repository: LocalSongRepository, mediaController: MediaControlle
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                IconButton(onClick = {
+                    val isRemovingCurrent = mediaController.currentMediaItemIndex == index
+                    mediaController.removeMediaItem(index)
+                    if (isRemovingCurrent && mediaController.mediaItemCount > 0) {
+                        mediaController.seekToDefaultPosition(0)
+                        mediaController.play()
+                    }
+                }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Remove from queue")
                 }
             }
         }

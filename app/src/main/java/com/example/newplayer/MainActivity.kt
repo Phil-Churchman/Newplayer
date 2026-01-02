@@ -244,7 +244,7 @@ fun AppRoot(
     ) { innerPadding ->
         NavHost(navController, startDestination = Screen.Songs.route, Modifier.padding(innerPadding)) {
             composable(Screen.Songs.route) {
-                SongListScreen(repository, isScanning)
+                SongListScreen(repository, isScanning, mediaController = mediaController)
             }
             composable(Screen.Artists.route) {
                 ArtistListScreen(repository, navController)
@@ -342,7 +342,8 @@ fun MiniPlayer(mediaController: MediaController) {
 fun SongListScreen(
     repository: LocalSongRepository,
     isScanning: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    mediaController: MediaController?
 ) {
     val songs by repository.allSongs.collectAsState(initial = emptyList())
     val sortedSongs = songs.sortedBy { it.title }
@@ -358,7 +359,28 @@ fun SongListScreen(
             FastScrollLazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 items = sortedSongs,
-                itemContent = { song -> SongListItem(song) },
+                itemContent = { song ->
+                    SongListItem(song) {
+                        mediaController?.let { controller ->
+                            val mediaItem = MediaItem.Builder()
+                                .setUri(song.path)
+                                .setMediaId(song.id.toString())
+                                .setMediaMetadata(
+                                    androidx.media3.common.MediaMetadata.Builder()
+                                        .setTitle(song.title)
+                                        .setArtist(song.artist)
+                                        .setAlbumTitle(song.album)
+                                        .build()
+                                )
+                                .build()
+                            val newItemIndex = controller.mediaItemCount
+                            controller.addMediaItem(newItemIndex, mediaItem)
+                            controller.seekToDefaultPosition(newItemIndex)
+                            controller.prepare()
+                            controller.play()
+                        }
+                    }
+                },
                 indicatorContent = { song -> song.title.firstOrNull()?.uppercase() ?: "#" },
                 emptyContent = {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -533,6 +555,26 @@ fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: 
                             ) {
                                 Text(song.track.toString())
                             }
+                        },
+                        modifier = Modifier.clickable {
+                            mediaController?.let { controller ->
+                                val mediaItem = MediaItem.Builder()
+                                    .setUri(song.path)
+                                    .setMediaId(song.id.toString())
+                                    .setMediaMetadata(
+                                        androidx.media3.common.MediaMetadata.Builder()
+                                            .setTitle(song.title)
+                                            .setArtist(song.artist)
+                                            .setAlbumTitle(song.album)
+                                            .build()
+                                    )
+                                    .build()
+                                val newItemIndex = controller.mediaItemCount
+                                controller.addMediaItem(newItemIndex, mediaItem)
+                                controller.seekToDefaultPosition(newItemIndex)
+                                controller.prepare()
+                                controller.play()
+                            }
                         }
                     )
                 }
@@ -543,10 +585,11 @@ fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: 
 
 
 @Composable
-fun SongListItem(song: Song) {
+fun SongListItem(song: Song, onClick: () -> Unit) {
     ListItem(
         headlineContent = { Text(song.title) },
-        supportingContent = { Text(song.artist) }
+        supportingContent = { Text(song.artist) },
+        modifier = Modifier.clickable(onClick = onClick)
     )
 }
 

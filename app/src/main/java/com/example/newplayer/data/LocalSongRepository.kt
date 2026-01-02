@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.MediaStore
+import androidx.media3.common.MediaItem
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.io.ByteArrayOutputStream
@@ -20,6 +21,7 @@ class LocalSongRepository(
     val allSongs: Flow<List<Song>> = songDao.getAll()
     val allArtists: Flow<List<Artist>> = artistDao.getAll()
     val allAlbums: Flow<List<Album>> = albumDao.getAll()
+    val artistsWithArtwork: Flow<List<ArtistWithArtwork>> = albumDao.getArtistsWithArtwork()
 
     fun getArtistNameById(artistId: Long): Flow<String?> {
         return artistDao.getArtistNameById(artistId)
@@ -41,15 +43,15 @@ class LocalSongRepository(
         if (text.isNullOrBlank()) return ""
         return text
             .replace("â€™", "'")
-            .replace("â€œ", """)
-            .replace("â€", """)
+            .replace("â€œ", "\" ")
+            .replace("â€", "\" ")
             .replace("â€“", "-")
             .replace("â€¦", "...")
             .replace("Ã¨", "è")
             .replace("’", "'")
             .replace("‘", "'")
-            .replace("“", """)
-            .replace("”", """)
+            .replace("“", "\" ")
+            .replace("”", "\" ")
             .replace("–", "-")
             .replace("…", "...")
             .trim()
@@ -95,7 +97,7 @@ class LocalSongRepository(
     }
 
 
-    suspend fun scanForSongs() {
+    suspend fun scanForSongs(): List<MediaItem> {
         songDao.deleteAll()
         artistDao.deleteAll()
         albumDao.deleteAll()
@@ -207,6 +209,21 @@ class LocalSongRepository(
                 }
             }
             songDao.insertAll(songsToInsert)
+        }
+        return allSongs.first().map { song ->
+            val artworkUri = ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), song.albumId)
+            MediaItem.Builder()
+                .setUri(song.path)
+                .setMediaId(song.id.toString())
+                .setMediaMetadata(
+                    androidx.media3.common.MediaMetadata.Builder()
+                        .setTitle(song.title)
+                        .setArtist(song.artist)
+                        .setAlbumTitle(song.album)
+                        .setArtworkUri(artworkUri)
+                        .build()
+                )
+                .build()
         }
     }
 }

@@ -68,9 +68,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -91,7 +93,7 @@ import androidx.navigation.navArgument
 import coil.compose.AsyncImage
 import com.example.newplayer.data.Album
 import com.example.newplayer.data.AppDatabase
-import com.example.newplayer.data.Artist
+import com.example.newplayer.data.ArtistWithArtwork
 import com.example.newplayer.data.LocalSongRepository
 import com.example.newplayer.data.Song
 import com.example.newplayer.ui.theme.NewPlayerTheme
@@ -126,6 +128,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             NewPlayerTheme {
                 var isScanning by remember { mutableStateOf(false) }
+                var mediaItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
                 val scope = rememberCoroutineScope()
                 val context = LocalContext.current
                 var mediaController by remember { mutableStateOf<MediaController?>(null) }
@@ -136,7 +139,7 @@ class MainActivity : ComponentActivity() {
                         if (isGranted) {
                             scope.launch {
                                 isScanning = true
-                                repository.scanForSongs()
+                                mediaItems = repository.scanForSongs()
                                 isScanning = false
                             }
                         }
@@ -147,7 +150,7 @@ class MainActivity : ComponentActivity() {
                     if (context.checkSelfPermission(Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                         scope.launch {
                             isScanning = true
-                            repository.scanForSongs()
+                            mediaItems = repository.scanForSongs()
                             isScanning = false
                         }
                     } else {
@@ -175,6 +178,10 @@ class MainActivity : ComponentActivity() {
                         val songsCount = repository.allSongs.first().size
                         if (songsCount == 0) {
                             scanAction()
+                        } else {
+                            mediaItems = repository.allSongs.first().map { song ->
+                                MediaItem.fromUri(song.path)
+                            }
                         }
                     }
                 }
@@ -185,7 +192,8 @@ class MainActivity : ComponentActivity() {
                     onScanSongs = {
                         scanAction()
                     },
-                    mediaController = mediaController
+                    mediaController = mediaController,
+                    mediaItems = mediaItems
                 )
             }
         }
@@ -198,7 +206,8 @@ fun AppRoot(
     repository: LocalSongRepository,
     isScanning: Boolean,
     onScanSongs: () -> Unit,
-    mediaController: MediaController?
+    mediaController: MediaController?,
+    mediaItems: List<MediaItem>
 ) {
     val navController = rememberNavController()
     val songs by repository.allSongs.collectAsState(initial = emptyList())
@@ -245,7 +254,12 @@ fun AppRoot(
         },
         bottomBar = {
             Column {
-                mediaController?.let { MiniPlayer(it) }
+                mediaController?.let { controller ->
+                    MiniPlayer(
+                        mediaController = controller,
+                        onClick = { navController.navigate("player") }
+                    )
+                }
                 NavigationBar {
                     navigationItems.forEach { screen ->
                         NavigationBarItem(
@@ -280,7 +294,10 @@ fun AppRoot(
     ) { innerPadding ->
         NavHost(navController, startDestination = Screen.Songs.route, Modifier.padding(innerPadding)) {
             composable(Screen.Songs.route) {
-                SongListScreen(repository, isScanning, mediaController = mediaController)
+                SongListScreen(
+                    repository, isScanning, mediaController = mediaController,
+                    mediaItems = mediaItems
+                )
             }
             composable(Screen.Artists.route) {
                 ArtistListScreen(repository, navController)
@@ -290,6 +307,11 @@ fun AppRoot(
             }
             composable(Screen.Queue.route) {
                 QueueScreen(mediaController = mediaController)
+            }
+            composable("player") {
+                FullScreenPlayer(
+                    mediaController = mediaController,
+                    onBack = { navController.popBackStack() })
             }
             composable(
                 "artist_albums/{artistId}",
@@ -306,7 +328,7 @@ fun AppRoot(
             ) { backStackEntry ->
                 val albumId = backStackEntry.arguments?.getLong("albumId")
                 if (albumId != null) {
-                    AlbumSongListScreen(repository, albumId, onBack = { navController.popBackStack() }, mediaController)
+                    AlbumSongListScreen(repository, albumId, onBack = { navController.popBackStack() }, mediaController, mediaItems)
                 }
             }
         }
@@ -314,7 +336,7 @@ fun AppRoot(
 }
 
 @Composable
-fun MiniPlayer(mediaController: MediaController) {
+fun MiniPlayer(mediaController: MediaController, onClick: () -> Unit) {
     var currentMediaItem by remember { mutableStateOf(mediaController.currentMediaItem) }
     var isPlaying by remember { mutableStateOf(mediaController.isPlaying) }
 
@@ -343,10 +365,20 @@ fun MiniPlayer(mediaController: MediaController) {
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick)
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
+        AsyncImage(
+            model = currentMediaItem?.mediaMetadata?.artworkUri,
+            contentDescription = "Album artwork",
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(4.dp)),
+            contentScale = ContentScale.Crop
+        )
+        Spacer(modifier = Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = currentMediaItem?.mediaMetadata?.title?.toString() ?: "Unknown Title",
@@ -446,6 +478,15 @@ fun QueueScreen(mediaController: MediaController?) {
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                AsyncImage(
+                    model = item.mediaMetadata.artworkUri,
+                    contentDescription = "Album artwork",
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    contentScale = ContentScale.Crop
+                )
+                Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = item.mediaMetadata.title?.toString() ?: "Unknown Title",
@@ -469,10 +510,12 @@ fun SongListScreen(
     repository: LocalSongRepository,
     isScanning: Boolean,
     modifier: Modifier = Modifier,
-    mediaController: MediaController?
+    mediaController: MediaController?,
+    mediaItems: List<MediaItem>
 ) {
     val songs by repository.allSongs.collectAsState(initial = emptyList())
     val sortedSongs = songs.sortedBy { it.title }
+    val albums by repository.allAlbums.collectAsState(initial = emptyList())
 
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         if (isScanning && songs.isEmpty()) {
@@ -486,24 +529,16 @@ fun SongListScreen(
                 modifier = Modifier.fillMaxSize(),
                 items = sortedSongs,
                 itemContent = { song ->
-                    SongListItem(song) {
+                    val album = albums.find { it.id == song.albumId }
+                    SongListItem(song, album?.artwork) {
                         mediaController?.let { controller ->
-                            val mediaItem = MediaItem.Builder()
-                                .setUri(song.path)
-                                .setMediaId(song.id.toString())
-                                .setMediaMetadata(
-                                    androidx.media3.common.MediaMetadata.Builder()
-                                        .setTitle(song.title)
-                                        .setArtist(song.artist)
-                                        .setAlbumTitle(song.album)
-                                        .build()
-                                )
-                                .build()
-                            val newItemIndex = controller.mediaItemCount
-                            controller.addMediaItem(newItemIndex, mediaItem)
-                            controller.seekToDefaultPosition(newItemIndex)
-                            controller.prepare()
-                            controller.play()
+                            val mediaItem = mediaItems.find { it.mediaId == song.id.toString() }
+                            if (mediaItem != null) {
+                                val startIndex = mediaItems.indexOf(mediaItem)
+                                controller.setMediaItems(mediaItems, startIndex, 0)
+                                controller.prepare()
+                                controller.play()
+                            }
                         }
                     }
                 },
@@ -520,19 +555,28 @@ fun SongListScreen(
 
 @Composable
 fun ArtistListScreen(repository: LocalSongRepository, navController: NavHostController, modifier: Modifier = Modifier) {
-    val artists by repository.allArtists.collectAsState(initial = emptyList())
-    val sortedArtists = artists.sortedBy { it.name }
+    val artistsWithArtwork by repository.artistsWithArtwork.collectAsState(initial = emptyList())
 
     FastScrollLazyColumn(
         modifier = modifier.fillMaxSize(),
-        items = sortedArtists,
+        items = artistsWithArtwork,
         itemContent = { artist ->
             ListItem(
-                headlineContent = { Text(artist.name) },
-                modifier = Modifier.clickable { navController.navigate("artist_albums/${artist.id}") }
+                headlineContent = { Text(artist.artistName) },
+                leadingContent = {
+                    AsyncImage(
+                        model = artist.artwork,
+                        contentDescription = "Artist artwork",
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(4.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                },
+                modifier = Modifier.clickable { navController.navigate("artist_albums/${artist.artistId}") }
             )
         },
-        indicatorContent = { artist -> artist.name.firstOrNull()?.uppercase() ?: "#" },
+        indicatorContent = { artist -> artist.artistName.firstOrNull()?.uppercase() ?: "#" },
         emptyContent = {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No artists found.")
@@ -552,6 +596,16 @@ fun AlbumListScreen(repository: LocalSongRepository, navController: NavHostContr
         itemContent = { album ->
             ListItem(
                 headlineContent = { Text(album.name) },
+                leadingContent = {
+                    AsyncImage(
+                        model = album.artwork,
+                        contentDescription = "Album artwork",
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(4.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                },
                 modifier = Modifier.clickable { navController.navigate("album_songs/${album.id}") }
             )
         },
@@ -574,7 +628,6 @@ fun ArtistAlbumListScreen(
 ) {
     val artistName by repository.getArtistNameById(artistId).collectAsState(initial = "Albums")
     val albums by repository.getAlbumsByArtistId(artistId).collectAsState(initial = emptyList())
-    val sortedAlbums = albums.sortedBy { it.name }
 
     Scaffold(
         topBar = {
@@ -594,10 +647,20 @@ fun ArtistAlbumListScreen(
     ) { innerPadding ->
         FastScrollLazyColumn(
             modifier = Modifier.fillMaxSize().padding(innerPadding),
-            items = sortedAlbums,
+            items = albums,
             itemContent = { album ->
                 ListItem(
                     headlineContent = { Text(album.name) },
+                    leadingContent = {
+                        AsyncImage(
+                            model = album.artwork,
+                            contentDescription = "Album artwork",
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(4.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                    },
                     modifier = Modifier.clickable { navController.navigate("album_songs/${album.id}") }
                 )
             },
@@ -613,7 +676,13 @@ fun ArtistAlbumListScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: () -> Unit, mediaController: MediaController?) {
+fun AlbumSongListScreen(
+    repository: LocalSongRepository,
+    albumId: Long,
+    onBack: () -> Unit,
+    mediaController: MediaController?,
+    mediaItems: List<MediaItem>
+) {
     val album by repository.getAlbumById(albumId).collectAsState(initial = null)
     val songs by repository.getSongsByAlbumId(albumId).collectAsState(initial = emptyList())
 
@@ -635,23 +704,13 @@ fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: 
         floatingActionButton = {
             if (songs.isNotEmpty()) {
                 FloatingActionButton(onClick = {
-                    mediaController?.let {
-                        val mediaItems = songs.map { song ->
-                            MediaItem.Builder()
-                                .setUri(song.path)
-                                .setMediaId(song.id.toString())
-                                .setMediaMetadata(
-                                    androidx.media3.common.MediaMetadata.Builder()
-                                        .setTitle(song.title)
-                                        .setArtist(song.artist)
-                                        .setAlbumTitle(song.album)
-                                        .build()
-                                )
-                                .build()
+                    mediaController?.let { controller ->
+                        val albumMediaItems = mediaItems.filter { mediaItem -> songs.any { it.id.toString() == mediaItem.mediaId } }
+                        if (albumMediaItems.isNotEmpty()) {
+                            controller.setMediaItems(albumMediaItems, 0, 0)
+                            controller.prepare()
+                            controller.play()
                         }
-                        it.setMediaItems(mediaItems)
-                        it.prepare()
-                        it.play()
                     }
                 }) {
                     Icon(Icons.Default.PlayArrow, contentDescription = "Play album")
@@ -660,6 +719,14 @@ fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: 
         }
     ) { innerPadding ->
         LazyColumn(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            item {
+                AsyncImage(
+                    model = album?.artwork,
+                    contentDescription = "Album artwork",
+                    modifier = Modifier.fillMaxWidth(),
+                    contentScale = ContentScale.Crop
+                )
+            }
             if (songs.isEmpty()) {
                 item {
                     Box(
@@ -684,22 +751,13 @@ fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: 
                         },
                         modifier = Modifier.clickable {
                             mediaController?.let { controller ->
-                                val mediaItem = MediaItem.Builder()
-                                    .setUri(song.path)
-                                    .setMediaId(song.id.toString())
-                                    .setMediaMetadata(
-                                        androidx.media3.common.MediaMetadata.Builder()
-                                            .setTitle(song.title)
-                                            .setArtist(song.artist)
-                                            .setAlbumTitle(song.album)
-                                            .build()
-                                    )
-                                    .build()
-                                val newItemIndex = controller.mediaItemCount
-                                controller.addMediaItem(newItemIndex, mediaItem)
-                                controller.seekToDefaultPosition(newItemIndex)
-                                controller.prepare()
-                                controller.play()
+                                val mediaItem = mediaItems.find { it.mediaId == song.id.toString() }
+                                if (mediaItem != null) {
+                                    val startIndex = mediaItems.indexOf(mediaItem)
+                                    controller.setMediaItems(mediaItems, startIndex, 0)
+                                    controller.prepare()
+                                    controller.play()
+                                }
                             }
                         }
                     )
@@ -709,12 +767,28 @@ fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: 
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FullScreenPlayer(mediaController: MediaController?, onBack: () -> Unit) {
+    // ... existing code
+}
+
 
 @Composable
-fun SongListItem(song: Song, onClick: () -> Unit) {
+fun SongListItem(song: Song, artwork: ByteArray?, onClick: () -> Unit) {
     ListItem(
         headlineContent = { Text(song.title) },
         supportingContent = { Text(song.artist) },
+        leadingContent = {
+            AsyncImage(
+                model = artwork,
+                contentDescription = "Album artwork",
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(4.dp)),
+                contentScale = ContentScale.Crop
+            )
+        },
         modifier = Modifier.clickable(onClick = onClick)
     )
 }

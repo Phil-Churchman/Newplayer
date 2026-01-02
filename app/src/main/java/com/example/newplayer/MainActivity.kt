@@ -40,11 +40,14 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PauseCircleFilled
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -57,6 +60,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -100,6 +104,7 @@ import com.example.newplayer.data.LocalSongRepository
 import com.example.newplayer.data.Song
 import com.example.newplayer.ui.theme.NewPlayerTheme
 import com.google.common.util.concurrent.MoreExecutors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -230,6 +235,7 @@ fun AppRoot(
     val currentDestination = navBackStackEntry?.destination
 
     val currentScreen = navigationItems.find { it.route == currentDestination?.route }
+    val isPlayerScreen = currentDestination?.route == "player"
 
     Scaffold(
         topBar = {
@@ -266,36 +272,38 @@ fun AppRoot(
             }
         },
         bottomBar = {
-            Column {
-                mediaController?.let { controller ->
-                    MiniPlayer(
-                        repository = repository,
-                        mediaController = controller,
-                        onClick = { navController.navigate("player") }
-                    )
-                }
-                NavigationBar {
-                    navigationItems.forEach { screen ->
-                        NavigationBarItem(
-                            icon = { Icon(screen.icon, contentDescription = null) },
-                            label = { Text(screen.title) },
-                            selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
-                            onClick = {
-                                navController.navigate(screen.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            }
+            if (!isPlayerScreen) {
+                Column {
+                    mediaController?.let { controller ->
+                        MiniPlayer(
+                            repository = repository,
+                            mediaController = controller,
+                            onClick = { navController.navigate("player") }
                         )
+                    }
+                    NavigationBar {
+                        navigationItems.forEach { screen ->
+                            NavigationBarItem(
+                                icon = { Icon(screen.icon, contentDescription = null) },
+                                label = { Text(screen.title) },
+                                selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
+                                onClick = {
+                                    navController.navigate(screen.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
         },
         floatingActionButton = {
-            if (songs.isEmpty()) {
+            if (songs.isEmpty() && !isPlayerScreen) {
                 FloatingActionButton(onClick = { if (!isScanning) onScanSongs() }) {
                     if (isScanning) {
                         CircularProgressIndicator(modifier = Modifier.size(28.dp))
@@ -326,6 +334,7 @@ fun AppRoot(
             }
             composable("player") {
                 FullScreenPlayer(
+                    repository = repository,
                     mediaController = mediaController,
                     onBack = { navController.popBackStack() }
                 )
@@ -815,10 +824,166 @@ fun AlbumSongListScreen(
     }
 }
 
+fun formatDuration(ms: Long): String {
+    val totalSeconds = ms / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return String.format("%02d:%02d", minutes, seconds)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FullScreenPlayer(mediaController: MediaController?, onBack: () -> Unit) {
-    // ... existing code
+fun FullScreenPlayer(
+    repository: LocalSongRepository,
+    mediaController: MediaController?,
+    onBack: () -> Unit
+) {
+    if (mediaController == null) {
+        Scaffold { padding ->
+            Box(modifier = Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Player not available")
+            }
+        }
+        return
+    }
+
+    var currentMediaItem by remember { mutableStateOf(mediaController.currentMediaItem) }
+    var isPlaying by remember { mutableStateOf(mediaController.isPlaying) }
+    var currentPosition by remember { mutableStateOf(mediaController.currentPosition) }
+    var duration by remember { mutableStateOf(mediaController.duration) }
+    var isSeeking by remember { mutableStateOf(false) }
+    var seekPosition by remember { mutableStateOf(0L) }
+
+    DisposableEffect(mediaController) {
+        val listener = object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                currentMediaItem = mediaItem
+            }
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                currentPosition = newPosition.positionMs
+            }
+        }
+        mediaController.addListener(listener)
+        currentMediaItem = mediaController.currentMediaItem
+        isPlaying = mediaController.isPlaying
+        currentPosition = mediaController.currentPosition
+        duration = mediaController.duration
+        onDispose {
+            mediaController.removeListener(listener)
+        }
+    }
+
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            while (true) {
+                if (!isSeeking) {
+                    currentPosition = mediaController.currentPosition
+                    duration = mediaController.duration
+                }
+                delay(1000)
+            }
+        }
+    }
+
+    val songs by repository.allSongs.collectAsState(initial = emptyList())
+    val albums by repository.allAlbums.collectAsState(initial = emptyList())
+    val song = songs.find { it.id.toString() == currentMediaItem?.mediaId }
+    val album = if (song != null) albums.find { it.id == song.albumId } else null
+    val artwork = album?.artwork
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            )
+        },
+        contentWindowInsets = WindowInsets(0.dp)
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            AsyncImage(
+                model = artwork,
+                contentDescription = "Album Artwork",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(12.dp)),
+                contentScale = ContentScale.Crop
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Text(
+                text = currentMediaItem?.mediaMetadata?.title?.toString() ?: "Unknown Title",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+            Text(
+                text = currentMediaItem?.mediaMetadata?.artist?.toString() ?: "Unknown Artist",
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Column {
+                Slider(
+                    value = if (isSeeking) seekPosition.toFloat() else currentPosition.toFloat(),
+                    onValueChange = {
+                        isSeeking = true
+                        seekPosition = it.toLong()
+                    },
+                    valueRange = 0f..(duration.toFloat().coerceAtLeast(0f)),
+                    onValueChangeFinished = {
+                        mediaController.seekTo(seekPosition)
+                        isSeeking = false
+                    }
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(text = formatDuration(if (isSeeking) seekPosition else currentPosition))
+                    Text(text = formatDuration(duration))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { mediaController.seekToPreviousMediaItem() }) {
+                    Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(48.dp))
+                }
+                IconButton(onClick = { if (isPlaying) mediaController.pause() else mediaController.play() }) {
+                    Icon(
+                        if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
+                        contentDescription = "Play/Pause",
+                        modifier = Modifier.size(72.dp)
+                    )
+                }
+                IconButton(onClick = { mediaController.seekToNextMediaItem() }) {
+                    Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(48.dp))
+                }
+            }
+        }
+    }
 }
 
 
@@ -856,7 +1021,7 @@ private fun <T> FastScrollLazyColumn(
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    var isDragging by remember { mutableStateOf(false) }
+var isDragging by remember { mutableStateOf(false) }
 
     Box(modifier = modifier) {
         LazyColumn(

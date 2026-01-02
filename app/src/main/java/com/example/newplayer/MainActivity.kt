@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.CircularProgressIndicator
@@ -62,12 +64,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -94,12 +99,14 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector)
     data object Songs : Screen("songs", "Songs", Icons.Default.MusicNote)
     data object Artists : Screen("artists", "Artists", Icons.Default.Person)
     data object Albums : Screen("albums", "Albums", Icons.Default.Album)
+    data object Queue : Screen("queue", "Queue", Icons.Default.QueueMusic)
 }
 
 val navigationItems = listOf(
     Screen.Songs,
     Screen.Artists,
     Screen.Albums,
+    Screen.Queue,
 )
 
 class MainActivity : ComponentActivity() {
@@ -252,6 +259,9 @@ fun AppRoot(
             composable(Screen.Albums.route) {
                 AlbumListScreen(repository, navController)
             }
+            composable(Screen.Queue.route) {
+                QueueScreen(mediaController = mediaController)
+            }
             composable(
                 "artist_albums/{artistId}",
                 arguments = listOf(navArgument("artistId") { type = NavType.LongType })
@@ -333,6 +343,93 @@ fun MiniPlayer(mediaController: MediaController) {
             }
             IconButton(onClick = { mediaController.seekToNextMediaItem() }) {
                 Icon(Icons.Default.SkipNext, contentDescription = "Skip Next")
+            }
+        }
+    }
+}
+
+@Composable
+fun QueueScreen(mediaController: MediaController?) {
+    if (mediaController == null) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Queue not available")
+        }
+        return
+    }
+
+    var timeline by remember { mutableStateOf(mediaController.currentTimeline) }
+    var currentMediaItem by remember { mutableStateOf(mediaController.currentMediaItem) }
+
+    DisposableEffect(mediaController) {
+        val listener = object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                timeline = player.currentTimeline
+                currentMediaItem = player.currentMediaItem
+            }
+        }
+
+        mediaController.addListener(listener)
+
+        timeline = mediaController.currentTimeline
+        currentMediaItem = mediaController.currentMediaItem
+
+        onDispose {
+            mediaController.removeListener(listener)
+        }
+    }
+
+    val mediaItems = remember(timeline) {
+        if (timeline.isEmpty) {
+            emptyList()
+        } else {
+            (0 until timeline.windowCount).map { i ->
+                val window = Timeline.Window()
+                timeline.getWindow(i, window)
+                window.mediaItem
+            }
+        }
+    }
+
+    if (mediaItems.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Queue is empty")
+        }
+        return
+    }
+
+    LazyColumn {
+        itemsIndexed(
+            items = mediaItems,
+            key = { _, item -> item.mediaId }
+        ) { index, item ->
+            val isCurrentlyPlaying = item.mediaId == currentMediaItem?.mediaId
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(if (isCurrentlyPlaying) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                    .clickable {
+                        if (!isCurrentlyPlaying) {
+                            mediaController.seekTo(index, 0)
+                        }
+                        mediaController.play()
+                    }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = item.mediaMetadata.title?.toString() ?: "Unknown Title",
+                        fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.Normal,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = item.mediaMetadata.artist?.toString() ?: "Unknown Artist",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

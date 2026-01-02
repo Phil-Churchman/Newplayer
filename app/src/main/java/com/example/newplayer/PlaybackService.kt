@@ -12,19 +12,6 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val player = ExoPlayer.Builder(this).build()
-
-        // Add some media items to the player
-        val mediaItem1 = MediaItem.fromUri("https://storage.googleapis.com/exoplayer-test-media-0/play.mp3")
-        val mediaItem2 = MediaItem.Builder()
-            .setUri("https://storage.googleapis.com/exoplayer-test-media-1/iries.mp3")
-            .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle("Iries").build())
-            .build()
-        player.addMediaItem(mediaItem1)
-        player.addMediaItem(mediaItem2)
-
-        player.repeatMode = ExoPlayer.REPEAT_MODE_ALL
-        player.prepare()
-
         mediaSession = MediaSession.Builder(this, player).build()
     }
 

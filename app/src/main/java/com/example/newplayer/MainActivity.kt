@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -292,24 +293,23 @@ fun AppRoot(
             }
         }
     ) { innerPadding ->
-        NavHost(navController, startDestination = Screen.Songs.route, modifier = Modifier.fillMaxSize()) {
+        NavHost(navController, startDestination = Screen.Songs.route, modifier = Modifier.padding(innerPadding)) {
             composable(Screen.Songs.route) {
                 SongListScreen(
                     repository = repository,
                     isScanning = isScanning,
-                    modifier = Modifier.padding(innerPadding),
                     mediaController = mediaController,
                     mediaItems = mediaItems
                 )
             }
             composable(Screen.Artists.route) {
-                ArtistListScreen(repository, navController, modifier = Modifier.padding(innerPadding))
+                ArtistListScreen(repository, navController)
             }
             composable(Screen.Albums.route) {
-                AlbumListScreen(repository, navController, modifier = Modifier.padding(innerPadding))
+                AlbumListScreen(repository, navController)
             }
             composable(Screen.Queue.route) {
-                QueueScreen(repository = repository, mediaController = mediaController, modifier = Modifier.padding(innerPadding))
+                QueueScreen(repository = repository, mediaController = mediaController)
             }
             composable("player") {
                 FullScreenPlayer(
@@ -731,52 +731,54 @@ fun AlbumSongListScreen(
             )
         }
     ) { innerPadding ->
-        LazyColumn(modifier = Modifier
-            .fillMaxSize()
-            .padding(innerPadding)) {
-            item {
-                AsyncImage(
-                    model = album?.artwork,
-                    contentDescription = "Album artwork",
-                    modifier = Modifier.fillMaxWidth(),
-                    contentScale = ContentScale.Crop
-                )
-            }
-            if (songs.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier.fillParentMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("No songs found for this album.")
+        Column(modifier = Modifier
+            .padding(innerPadding)
+        ) {
+            AsyncImage(
+                model = album?.artwork,
+                contentDescription = "Album artwork",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp),
+                contentScale = ContentScale.Crop
+            )
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                if (songs.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillParentMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("No songs found for this album.")
+                        }
                     }
-                }
-            } else {
-                items(songs) { song ->
-                    ListItem(
-                        headlineContent = { Text(song.title) },
-                        supportingContent = { Text(song.artist) },
-                        leadingContent = {
-                            Box(
-                                modifier = Modifier.width(24.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(song.track.toString())
-                            }
-                        },
-                        modifier = Modifier.clickable {
-                            mediaController?.let { controller ->
-                                val mediaItem = mediaItems.find { it.mediaId == song.id.toString() }
-                                if (mediaItem != null) {
-                                    val newItemIndex = controller.mediaItemCount
-                                    controller.addMediaItem(mediaItem)
-                                    controller.seekTo(newItemIndex, 0L)
-                                    controller.prepare()
-                                    controller.play()
+                } else {
+                    items(songs) { song ->
+                        ListItem(
+                            headlineContent = { Text(song.title) },
+                            supportingContent = { Text(song.artist) },
+                            leadingContent = {
+                                Box(
+                                    modifier = Modifier.width(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(song.track.toString())
+                                }
+                            },
+                            modifier = Modifier.clickable {
+                                mediaController?.let { controller ->
+                                    val mediaItem = mediaItems.find { it.mediaId == song.id.toString() }
+                                    if (mediaItem != null) {
+                                        val newItemIndex = controller.mediaItemCount
+                                        controller.addMediaItem(mediaItem)
+                                        controller.seekTo(newItemIndex, 0L)
+                                        controller.prepare()
+                                        controller.play()
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }

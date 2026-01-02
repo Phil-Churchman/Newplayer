@@ -1,5 +1,6 @@
 package com.example.newplayer
 
+import android.content.ComponentName
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -29,11 +30,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -48,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -59,7 +61,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
@@ -75,8 +82,9 @@ import com.example.newplayer.data.Artist
 import com.example.newplayer.data.LocalSongRepository
 import com.example.newplayer.data.Song
 import com.example.newplayer.ui.theme.NewPlayerTheme
-import kotlinx.coroutines.launch
+import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 
 sealed class Screen(val route: String, val title: String, val icon: ImageVector) {
@@ -104,6 +112,23 @@ class MainActivity : ComponentActivity() {
             NewPlayerTheme {
                 var isScanning by remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
+                val context = LocalContext.current
+                var mediaController by remember { mutableStateOf<MediaController?>(null) }
+
+                DisposableEffect(context) {
+                    val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+                    val controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+                    controllerFuture.addListener(
+                        {
+                            mediaController = controllerFuture.get()
+                        },
+                        MoreExecutors.directExecutor()
+                    )
+
+                    onDispose {
+                        mediaController?.release()
+                    }
+                }
 
                 LaunchedEffect(Unit) {
                     scope.launch {
@@ -125,7 +150,8 @@ class MainActivity : ComponentActivity() {
                             repository.scanForSongs()
                             isScanning = false
                         }
-                    }
+                    },
+                    mediaController = mediaController
                 )
             }
         }
@@ -137,7 +163,8 @@ class MainActivity : ComponentActivity() {
 fun AppRoot(
     repository: LocalSongRepository,
     isScanning: Boolean,
-    onScanSongs: () -> Unit
+    onScanSongs: () -> Unit,
+    mediaController: MediaController?
 ) {
     val navController = rememberNavController()
     Scaffold(
@@ -151,24 +178,27 @@ fun AppRoot(
             )
         },
         bottomBar = {
-            NavigationBar {
-                val navBackStackEntry by navController.currentBackStackEntryAsState()
-                val currentDestination = navBackStackEntry?.destination
-                navigationItems.forEach { screen ->
-                    NavigationBarItem(
-                        icon = { Icon(screen.icon, contentDescription = null) },
-                        label = { Text(screen.title) },
-                        selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
-                        onClick = {
-                            navController.navigate(screen.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
+            Column {
+                mediaController?.let { MiniPlayer(it) }
+                NavigationBar {
+                    val navBackStackEntry by navController.currentBackStackEntryAsState()
+                    val currentDestination = navBackStackEntry?.destination
+                    navigationItems.forEach { screen ->
+                        NavigationBarItem(
+                            icon = { Icon(screen.icon, contentDescription = null) },
+                            label = { Text(screen.title) },
+                            selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
+                            onClick = {
+                                navController.navigate(screen.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
                                 }
-                                launchSingleTop = true
-                                restoreState = true
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         },
@@ -207,8 +237,72 @@ fun AppRoot(
             ) { backStackEntry ->
                 val albumId = backStackEntry.arguments?.getLong("albumId")
                 if (albumId != null) {
-                    AlbumSongListScreen(repository, albumId, onBack = { navController.popBackStack() })
+                    AlbumSongListScreen(repository, albumId, onBack = { navController.popBackStack() }, mediaController)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun MiniPlayer(mediaController: MediaController) {
+    var currentMediaItem by remember { mutableStateOf(mediaController.currentMediaItem) }
+    var isPlaying by remember { mutableStateOf(mediaController.isPlaying) }
+
+    DisposableEffect(mediaController) {
+        val listener = object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                currentMediaItem = mediaItem
+            }
+
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+        }
+        mediaController.addListener(listener)
+        onDispose {
+            mediaController.removeListener(listener)
+        }
+    }
+
+    if (currentMediaItem == null) {
+        // Don't show the player if there's nothing in the queue
+        return
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = currentMediaItem?.mediaMetadata?.title?.toString() ?: "Unknown Title",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                text = currentMediaItem?.mediaMetadata?.artist?.toString() ?: "Unknown Artist",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Row {
+            IconButton(onClick = {
+                if (isPlaying) {
+                    mediaController.pause()
+                } else {
+                    mediaController.play()
+                }
+            }) {
+                Icon(
+                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = "Play/Pause"
+                )
+            }
+            IconButton(onClick = { mediaController.seekToNextMediaItem() }) {
+                Icon(Icons.Default.SkipNext, contentDescription = "Skip Next")
             }
         }
     }
@@ -341,7 +435,7 @@ fun ArtistAlbumListScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: () -> Unit) {
+fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: () -> Unit, mediaController: MediaController?) {
     val album by repository.getAlbumById(albumId).collectAsState(initial = null)
     val songs by repository.getSongsByAlbumId(albumId).collectAsState(initial = emptyList())
 
@@ -359,6 +453,32 @@ fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: 
                     titleContentColor = MaterialTheme.colorScheme.primary,
                 )
             )
+        },
+        floatingActionButton = {
+            if (songs.isNotEmpty()) {
+                FloatingActionButton(onClick = {
+                    mediaController?.let {
+                        val mediaItems = songs.map { song ->
+                            MediaItem.Builder()
+                                .setUri(song.path)
+                                .setMediaId(song.id.toString())
+                                .setMediaMetadata(
+                                    androidx.media3.common.MediaMetadata.Builder()
+                                        .setTitle(song.title)
+                                        .setArtist(song.artist)
+                                        .setAlbumTitle(song.album)
+                                        .build()
+                                )
+                                .build()
+                        }
+                        it.setMediaItems(mediaItems)
+                        it.prepare()
+                        it.play()
+                    }
+                }) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = "Play album")
+                }
+            }
         }
     ) { innerPadding ->
         LazyColumn(modifier = Modifier.fillMaxSize().padding(innerPadding)) {

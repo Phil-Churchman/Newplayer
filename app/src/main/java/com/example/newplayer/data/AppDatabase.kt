@@ -1,11 +1,19 @@
 package com.example.newplayer.data
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [Song::class, Artist::class, Album::class], version = 6, exportSchema = false)
+@Database(
+    entities = [Song::class, Artist::class, Album::class],
+    version = 7,
+    exportSchema = true,
+    autoMigrations = [
+        AutoMigration(from = 6, to = 7)
+    ]
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun songDao(): SongDao
     abstract fun artistDao(): ArtistDao
@@ -22,7 +30,6 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "song_database"
                 )
-                .fallbackToDestructiveMigration()
                 .build()
                 INSTANCE = instance
                 instance

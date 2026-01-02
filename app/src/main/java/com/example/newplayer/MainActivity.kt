@@ -88,6 +88,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import coil.compose.AsyncImage
 import com.example.newplayer.data.Album
 import com.example.newplayer.data.AppDatabase
 import com.example.newplayer.data.Artist

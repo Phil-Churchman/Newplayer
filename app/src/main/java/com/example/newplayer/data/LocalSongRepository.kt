@@ -1,9 +1,14 @@
 package com.example.newplayer.data
 
+import android.content.ContentUris
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.provider.MediaStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import java.io.ByteArrayOutputStream
 
 class LocalSongRepository(
     private val context: Context,
@@ -49,6 +54,47 @@ class LocalSongRepository(
             .replace("…", "...")
             .trim()
     }
+
+    private fun getAndResizeArtwork(albumId: Long): ByteArray? {
+        try {
+            val artworkUri = ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId)
+            context.contentResolver.openInputStream(artworkUri)?.use { inputStream ->
+                val originalBitmap = BitmapFactory.decodeStream(inputStream)
+                if (originalBitmap == null) return null
+
+                val maxHeight = 512
+                val maxWidth = 512
+
+                if (originalBitmap.height <= maxHeight && originalBitmap.width <= maxWidth) {
+                    val baos = ByteArrayOutputStream()
+                    originalBitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+                    return baos.toByteArray()
+                }
+
+                val ratio: Float = originalBitmap.width.toFloat() / originalBitmap.height.toFloat()
+                val newWidth: Int
+                val newHeight: Int
+                if (originalBitmap.width > originalBitmap.height) {
+                    newWidth = maxWidth
+                    newHeight = (maxWidth / ratio).toInt()
+                } else {
+                    newWidth = (maxHeight * ratio).toInt()
+                    newHeight = maxHeight
+                }
+
+                val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, newWidth, newHeight, true)
+                val baos = ByteArrayOutputStream()
+                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+                return baos.toByteArray()
+            }
+        } catch (e: Exception) {
+            // Could be FileNotFoundException or other issues
+            return null
+        }
+        return null
+    }
+
+
     suspend fun scanForSongs() {
         songDao.deleteAll()
         artistDao.deleteAll()
@@ -61,7 +107,8 @@ class LocalSongRepository(
             val albumArtist: String,
             val path: String,
             val duration: Long,
-            val track: Int
+            val track: Int,
+            val albumIdFromMediaStore: Long
         )
 
         val rawSongs = mutableListOf<RawSongInfo>()
@@ -73,7 +120,8 @@ class LocalSongRepository(
             MediaStore.Audio.Media.ALBUM_ARTIST,
             MediaStore.Audio.Media.DATA,
             MediaStore.Audio.Media.DURATION,
-            MediaStore.Audio.Media.TRACK
+            MediaStore.Audio.Media.TRACK,
+            MediaStore.Audio.Media.ALBUM_ID
         )
 
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
@@ -92,6 +140,7 @@ class LocalSongRepository(
             val pathColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
             val durationColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
             val trackColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TRACK)
+            val albumIdColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
 
             while (cursor.moveToNext()) {
                 val songTitle = normalizeText(cursor.getString(titleColumn))
@@ -102,7 +151,6 @@ class LocalSongRepository(
                 val trackNumberRaw = cursor.getString(trackColumn)
                 val trackNumber = trackNumberRaw?.split('/')?.get(0)?.toIntOrNull() ?: 0
 
-
                 if (songTitle.isNotBlank() && songAlbum.isNotBlank()) {
                     rawSongs.add(
                         RawSongInfo(
@@ -112,7 +160,8 @@ class LocalSongRepository(
                             albumArtist = effectiveAlbumArtist,
                             path = cursor.getString(pathColumn),
                             duration = cursor.getLong(durationColumn),
-                            track = trackNumber
+                            track = trackNumber,
+                            albumIdFromMediaStore = cursor.getLong(albumIdColumn)
                         )
                     )
                 }
@@ -131,7 +180,8 @@ class LocalSongRepository(
                     val firstSong = songsInAlbum.first()
                     val artistId = artistIdMap[firstSong.albumArtist]
                     if (artistId != null) {
-                        Album(name = albumName, artistId = artistId)
+                        val artwork = getAndResizeArtwork(firstSong.albumIdFromMediaStore)
+                        Album(name = albumName, artistId = artistId, artwork = artwork)
                     } else {
                         null
                     }

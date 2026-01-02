@@ -12,5 +12,6 @@ data class Album(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     val name: String,
-    val artistId: Long
+    val artistId: Long,
+    val artwork: ByteArray? = null
 )

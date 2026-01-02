@@ -13,4 +13,7 @@ interface AlbumDao {
 
     @Query("SELECT * FROM albums ORDER BY name ASC")
     fun getAll(): Flow<List<Album>>
+
+    @Query("DELETE FROM albums")
+    suspend fun deleteAll()
 }

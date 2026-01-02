@@ -13,4 +13,7 @@ interface ArtistDao {
 
     @Query("SELECT * FROM artists ORDER BY name ASC")
     fun getAll(): Flow<List<Artist>>
+
+    @Query("DELETE FROM artists")
+    suspend fun deleteAll()
 }

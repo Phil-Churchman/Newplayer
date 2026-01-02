@@ -13,4 +13,7 @@ interface SongDao {
 
     @Query("SELECT * FROM songs")
     fun getAll(): Flow<List<Song>>
+
+    @Query("DELETE FROM songs")
+    suspend fun deleteAll()
 }

@@ -16,4 +16,7 @@ interface AlbumDao {
 
     @Query("DELETE FROM albums")
     suspend fun deleteAll()
+
+    @Query("SELECT * FROM albums WHERE artistId = :artistId ORDER BY name ASC")
+    fun getAlbumsByArtistId(artistId: Long): Flow<List<Album>>
 }

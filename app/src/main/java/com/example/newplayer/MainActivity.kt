@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,6 +18,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -32,10 +34,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.example.newplayer.data.*
 import com.example.newplayer.ui.theme.NewPlayerTheme
 import kotlinx.coroutines.launch
@@ -169,10 +174,19 @@ fun AppRoot(
                 SongListScreen(repository, isScanning)
             }
             composable(Screen.Artists.route) {
-                ArtistListScreen(repository)
+                ArtistListScreen(repository, navController)
             }
             composable(Screen.Albums.route) {
                 AlbumListScreen(repository)
+            }
+            composable(
+                "artist_albums/{artistId}",
+                arguments = listOf(navArgument("artistId") { type = NavType.LongType })
+            ) { backStackEntry ->
+                val artistId = backStackEntry.arguments?.getLong("artistId")
+                if (artistId != null) {
+                    ArtistAlbumListScreen(repository, artistId, onBack = { navController.popBackStack() })
+                }
             }
         }
     }
@@ -211,14 +225,19 @@ fun SongListScreen(
 }
 
 @Composable
-fun ArtistListScreen(repository: LocalSongRepository, modifier: Modifier = Modifier) {
+fun ArtistListScreen(repository: LocalSongRepository, navController: NavHostController, modifier: Modifier = Modifier) {
     val artists by repository.allArtists.collectAsState(initial = emptyList())
     val sortedArtists = artists.sortedBy { it.name }
 
     FastScrollLazyColumn(
         modifier = modifier.fillMaxSize(),
         items = sortedArtists,
-        itemContent = { artist -> ListItem(headlineContent = { Text(artist.name) }) },
+        itemContent = { artist ->
+            ListItem(
+                headlineContent = { Text(artist.name) },
+                modifier = Modifier.clickable { navController.navigate("artist_albums/${artist.id}") }
+            )
+        },
         indicatorContent = { artist -> artist.name.firstOrNull()?.uppercase() ?: "#" },
         emptyContent = {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -244,6 +263,43 @@ fun AlbumListScreen(repository: LocalSongRepository, modifier: Modifier = Modifi
             }
         }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ArtistAlbumListScreen(repository: LocalSongRepository, artistId: Long, onBack: () -> Unit) {
+    val artistName by repository.getArtistNameById(artistId).collectAsState(initial = "Albums")
+    val albums by repository.getAlbumsByArtistId(artistId).collectAsState(initial = emptyList())
+    val sortedAlbums = albums.sortedBy { it.name }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(artistName ?: "Albums") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.primary,
+                )
+            )
+        }
+    ) { innerPadding ->
+        FastScrollLazyColumn(
+            modifier = Modifier.fillMaxSize().padding(innerPadding),
+            items = sortedAlbums,
+            itemContent = { album -> ListItem(headlineContent = { Text(album.name) }) },
+            indicatorContent = { album -> album.name.firstOrNull()?.uppercase() ?: "#" },
+            emptyContent = {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No albums found for this artist.")
+                }
+            }
+        )
+    }
 }
 
 @Composable

@@ -11,5 +11,6 @@ import androidx.room.PrimaryKey
 data class Album(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val name: String
+    val name: String,
+    val artistId: Long
 )

@@ -180,44 +180,49 @@ fun AppRoot(
     val songs by repository.allSongs.collectAsState(initial = emptyList())
     var showMenu by remember { mutableStateOf(false) }
 
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentDestination = navBackStackEntry?.destination
+
+    val currentScreen = navigationItems.find { it.route == currentDestination?.route }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("New Player") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.primary,
-                ),
-                actions = {
-                    if (songs.isNotEmpty()) {
-                        IconButton(onClick = { showMenu = !showMenu }) {
-                            Icon(
-                                imageVector = Icons.Default.MoreVert,
-                                contentDescription = "More options"
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Sync") },
-                                onClick = {
-                                    showMenu = false
-                                    onScanSongs()
-                                }
-                            )
+            if (currentScreen != null) {
+                TopAppBar(
+                    title = { Text(currentScreen.title) },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        titleContentColor = MaterialTheme.colorScheme.primary,
+                    ),
+                    actions = {
+                        if (songs.isNotEmpty()) {
+                            IconButton(onClick = { showMenu = !showMenu }) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "More options"
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showMenu,
+                                onDismissRequest = { showMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Sync") },
+                                    onClick = {
+                                        showMenu = false
+                                        onScanSongs()
+                                    }
+                                )
+                            }
                         }
                     }
-                }
-            )
+                )
+            }
         },
         bottomBar = {
             Column {
                 mediaController?.let { MiniPlayer(it) }
                 NavigationBar {
-                    val navBackStackEntry by navController.currentBackStackEntryAsState()
-                    val currentDestination = navBackStackEntry?.destination
                     navigationItems.forEach { screen ->
                         NavigationBarItem(
                             icon = { Icon(screen.icon, contentDescription = null) },

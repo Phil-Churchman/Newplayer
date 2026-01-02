@@ -7,9 +7,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.MusicNote
@@ -20,6 +26,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -178,6 +185,7 @@ fun SongListScreen(
     modifier: Modifier = Modifier
 ) {
     val songs by repository.allSongs.collectAsState(initial = emptyList())
+    val sortedSongs = songs.sortedBy { it.title }
 
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         if (isScanning) {
@@ -186,14 +194,18 @@ fun SongListScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Scanning for music...")
             }
-        } else if (songs.isEmpty()) {
-            Text("No songs found. Tap the scan button to find music.")
         } else {
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                items(songs) { song ->
-                    SongListItem(song)
+            FastScrollLazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                items = sortedSongs,
+                itemContent = { song -> SongListItem(song) },
+                indicatorContent = { song -> song.title.firstOrNull()?.uppercase() ?: "#" },
+                emptyContent = {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No songs found. Tap the scan button to find music.")
+                    }
                 }
-            }
+            )
         }
     }
 }
@@ -201,21 +213,37 @@ fun SongListScreen(
 @Composable
 fun ArtistListScreen(repository: LocalSongRepository, modifier: Modifier = Modifier) {
     val artists by repository.allArtists.collectAsState(initial = emptyList())
-    LazyColumn(modifier = modifier.fillMaxSize()) {
-        items(artists) { artist ->
-            ListItem(headlineContent = { Text(artist.name) })
+    val sortedArtists = artists.sortedBy { it.name }
+
+    FastScrollLazyColumn(
+        modifier = modifier.fillMaxSize(),
+        items = sortedArtists,
+        itemContent = { artist -> ListItem(headlineContent = { Text(artist.name) }) },
+        indicatorContent = { artist -> artist.name.firstOrNull()?.uppercase() ?: "#" },
+        emptyContent = {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No artists found.")
+            }
         }
-    }
+    )
 }
 
 @Composable
 fun AlbumListScreen(repository: LocalSongRepository, modifier: Modifier = Modifier) {
     val albums by repository.allAlbums.collectAsState(initial = emptyList())
-    LazyColumn(modifier = modifier.fillMaxSize()) {
-        items(albums) { album ->
-            ListItem(headlineContent = { Text(album.name) })
+    val sortedAlbums = albums.sortedBy { it.name }
+
+    FastScrollLazyColumn(
+        modifier = modifier.fillMaxSize(),
+        items = sortedAlbums,
+        itemContent = { album -> ListItem(headlineContent = { Text(album.name) }) },
+        indicatorContent = { album -> album.name.firstOrNull()?.uppercase() ?: "#" },
+        emptyContent = {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No albums found.")
+            }
         }
-    }
+    )
 }
 
 @Composable
@@ -224,4 +252,97 @@ fun SongListItem(song: Song) {
         headlineContent = { Text(song.title) },
         supportingContent = { Text(song.artist) }
     )
+}
+
+@Composable
+private fun <T> FastScrollLazyColumn(
+    modifier: Modifier = Modifier,
+    items: List<T>,
+    itemContent: @Composable (T) -> Unit,
+    indicatorContent: (T) -> String,
+    emptyContent: @Composable () -> Unit
+) {
+    if (items.isEmpty()) {
+        emptyContent()
+        return
+    }
+
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var isDragging by remember { mutableStateOf(false) }
+
+    Box(modifier = modifier) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(items) { item ->
+                itemContent(item)
+            }
+        }
+
+        BoxWithConstraints(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(24.dp)
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onDragStart = { isDragging = true },
+                        onDragEnd = { isDragging = false },
+                        onVerticalDrag = { change, _ ->
+                            scope.launch {
+                                val dragRatio = (change.position.y / size.height).coerceIn(0f, 1f)
+                                val index = (dragRatio * (items.size - 1)).toInt()
+                                listState.scrollToItem(index)
+                            }
+                        }
+                    )
+                }
+        ) {
+            val visibleItemsInfo = listState.layoutInfo.visibleItemsInfo
+            val totalItemsCount = listState.layoutInfo.totalItemsCount
+            if (visibleItemsInfo.isNotEmpty() && totalItemsCount > visibleItemsInfo.size) {
+
+                val containerHeight = this.maxHeight
+                val visibleItemsRatio = visibleItemsInfo.size.toFloat() / totalItemsCount
+                val thumbHeight = (containerHeight * visibleItemsRatio).coerceAtLeast(24.dp)
+
+                val scrollableRange = containerHeight - thumbHeight
+                val scrollProgress = listState.firstVisibleItemIndex.toFloat() / (totalItemsCount - visibleItemsInfo.size).toFloat()
+
+                val thumbOffset = (scrollableRange * scrollProgress).coerceIn(0.dp, containerHeight - thumbHeight)
+
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .offset(y = thumbOffset)
+                        .height(thumbHeight)
+                        .width(4.dp)
+                        .background(color = MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(2.dp))
+                )
+            }
+        }
+
+        val firstVisibleItem = items.getOrNull(listState.firstVisibleItemIndex)
+        if (isDragging && firstVisibleItem != null) {
+            val indicatorChar = indicatorContent(firstVisibleItem)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(
+                        color = MaterialTheme.colorScheme.primary,
+                        shape = CircleShape
+                    )
+                    .size(80.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = indicatorChar,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    style = MaterialTheme.typography.headlineLarge
+                )
+            }
+        }
+    }
 }

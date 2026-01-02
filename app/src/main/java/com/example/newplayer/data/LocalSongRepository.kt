@@ -15,6 +15,25 @@ class LocalSongRepository(
     val allArtists: Flow<List<Artist>> = artistDao.getAll()
     val allAlbums: Flow<List<Album>> = albumDao.getAll()
 
+    private fun normalizeText(text: String?): String {
+        if (text.isNullOrBlank()) return ""
+        return text
+            // Fix mis-encoded characters
+            .replace("â€™", "'")
+            .replace("â€œ", "\"")
+            .replace("â€", "\"")
+            .replace("â€“", "-")
+            .replace("â€¦", "...")
+            .replace("Ã¨", "è")
+            // Normalize typographic quotes
+            .replace("’", "'")
+            .replace("‘", "'")
+            .replace("“", "\"")
+            .replace("”", "\"")
+            .replace("–", "-")
+            .replace("…", "...")
+            .trim() // Remove leading/trailing spaces
+    }
     suspend fun scanForSongs() {
         // Clear existing data first
         songDao.deleteAll()

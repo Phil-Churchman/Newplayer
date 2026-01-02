@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -91,9 +92,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import coil.compose.AsyncImage
-import com.example.newplayer.data.Album
 import com.example.newplayer.data.AppDatabase
-import com.example.newplayer.data.ArtistWithArtwork
 import com.example.newplayer.data.LocalSongRepository
 import com.example.newplayer.data.Song
 import com.example.newplayer.ui.theme.NewPlayerTheme
@@ -124,7 +123,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         database = AppDatabase.getDatabase(applicationContext)
         repository = LocalSongRepository(this,
-            database.songDao(), database.artistDao(), database.albumDao())
+            database.songDao(), database.artistDao(), database.albumDao()
+        )
         setContent {
             NewPlayerTheme {
                 var isScanning by remember { mutableStateOf(false) }
@@ -292,26 +292,30 @@ fun AppRoot(
             }
         }
     ) { innerPadding ->
-        NavHost(navController, startDestination = Screen.Songs.route, Modifier.padding(innerPadding)) {
+        NavHost(navController, startDestination = Screen.Songs.route, modifier = Modifier.fillMaxSize()) {
             composable(Screen.Songs.route) {
                 SongListScreen(
-                    repository, isScanning, mediaController = mediaController,
+                    repository = repository,
+                    isScanning = isScanning,
+                    modifier = Modifier.padding(innerPadding),
+                    mediaController = mediaController,
                     mediaItems = mediaItems
                 )
             }
             composable(Screen.Artists.route) {
-                ArtistListScreen(repository, navController)
+                ArtistListScreen(repository, navController, modifier = Modifier.padding(innerPadding))
             }
             composable(Screen.Albums.route) {
-                AlbumListScreen(repository, navController)
+                AlbumListScreen(repository, navController, modifier = Modifier.padding(innerPadding))
             }
             composable(Screen.Queue.route) {
-                QueueScreen(repository = repository, mediaController = mediaController)
+                QueueScreen(repository = repository, mediaController = mediaController, modifier = Modifier.padding(innerPadding))
             }
             composable("player") {
                 FullScreenPlayer(
                     mediaController = mediaController,
-                    onBack = { navController.popBackStack() })
+                    onBack = { navController.popBackStack() }
+                )
             }
             composable(
                 "artist_albums/{artistId}",
@@ -410,9 +414,9 @@ fun MiniPlayer(mediaController: MediaController, onClick: () -> Unit) {
 }
 
 @Composable
-fun QueueScreen(repository: LocalSongRepository, mediaController: MediaController?) {
+fun QueueScreen(repository: LocalSongRepository, mediaController: MediaController?, modifier: Modifier = Modifier) {
     if (mediaController == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("Queue not available")
         }
         return
@@ -454,13 +458,13 @@ fun QueueScreen(repository: LocalSongRepository, mediaController: MediaControlle
     }
 
     if (mediaItems.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("Queue is empty")
         }
         return
     }
 
-    LazyColumn {
+    LazyColumn(modifier = modifier) {
         itemsIndexed(
             items = mediaItems,
             key = { _, item -> item.mediaId }
@@ -634,6 +638,7 @@ fun ArtistAlbumListScreen(
     val albums by repository.getAlbumsByArtistId(artistId).collectAsState(initial = emptyList())
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0.dp),
         topBar = {
             TopAppBar(
                 title = { Text(artistName ?: "Albums") },
@@ -650,7 +655,9 @@ fun ArtistAlbumListScreen(
         }
     ) { innerPadding ->
         FastScrollLazyColumn(
-            modifier = Modifier.fillMaxSize().padding(innerPadding),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
             items = albums,
             itemContent = { album ->
                 ListItem(
@@ -691,6 +698,7 @@ fun AlbumSongListScreen(
     val songs by repository.getSongsByAlbumId(albumId).collectAsState(initial = emptyList())
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0.dp),
         topBar = {
             TopAppBar(
                 title = { Text(album?.name ?: "Songs") },
@@ -722,7 +730,9 @@ fun AlbumSongListScreen(
             }
         }
     ) { innerPadding ->
-        LazyColumn(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+        LazyColumn(modifier = Modifier
+            .fillMaxSize()
+            .padding(innerPadding)) {
             item {
                 AsyncImage(
                     model = album?.artwork,
@@ -758,6 +768,7 @@ fun AlbumSongListScreen(
                                 val mediaItem = mediaItems.find { it.mediaId == song.id.toString() }
                                 if (mediaItem != null) {
                                     val startIndex = mediaItems.indexOf(mediaItem)
+
                                     controller.setMediaItems(mediaItems, startIndex, 0)
                                     controller.prepare()
                                     controller.play()

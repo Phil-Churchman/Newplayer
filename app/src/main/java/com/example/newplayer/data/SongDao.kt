@@ -16,4 +16,7 @@ interface SongDao {
 
     @Query("DELETE FROM songs")
     suspend fun deleteAll()
+
+    @Query("SELECT * FROM songs WHERE albumId = :albumId ORDER BY track ASC")
+    fun getSongsByAlbumId(albumId: Long): Flow<List<Song>>
 }

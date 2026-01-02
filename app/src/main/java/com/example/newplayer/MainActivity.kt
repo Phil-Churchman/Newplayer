@@ -48,8 +48,6 @@ import com.example.newplayer.data.Album
 import com.example.newplayer.data.Artist
 import com.example.newplayer.data.Song
 
-
-
 sealed class Screen(val route: String, val title: String, val icon: ImageVector) {
     object Songs : Screen("songs", "Songs", Icons.Default.MusicNote)
     object Artists : Screen("artists", "Artists", Icons.Default.Person)
@@ -79,7 +77,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         database = AppDatabase.getDatabase(this)
-        repository = LocalSongRepository(this, database.songDao(), database.artistDao(), database.albumDao())
+        repository = LocalSongRepository(this, database.songDao(), database.artistDao(), database.albumDao(), database.localQueueDao())
 
         setContent {
             NewPlayerTheme {
@@ -177,7 +175,7 @@ fun AppRoot(
                 ArtistListScreen(repository, navController)
             }
             composable(Screen.Albums.route) {
-                AlbumListScreen(repository)
+                AlbumListScreen(repository, navController)
             }
             composable(
                 "artist_albums/{artistId}",
@@ -185,7 +183,16 @@ fun AppRoot(
             ) { backStackEntry ->
                 val artistId = backStackEntry.arguments?.getLong("artistId")
                 if (artistId != null) {
-                    ArtistAlbumListScreen(repository, artistId, onBack = { navController.popBackStack() })
+                    ArtistAlbumListScreen(repository, artistId, navController, onBack = { navController.popBackStack() })
+                }
+            }
+            composable(
+                "album_songs/{albumId}",
+                arguments = listOf(navArgument("albumId") { type = NavType.LongType })
+            ) { backStackEntry ->
+                val albumId = backStackEntry.arguments?.getLong("albumId")
+                if (albumId != null) {
+                    AlbumSongListScreen(repository, albumId, onBack = { navController.popBackStack() })
                 }
             }
         }
@@ -248,14 +255,19 @@ fun ArtistListScreen(repository: LocalSongRepository, navController: NavHostCont
 }
 
 @Composable
-fun AlbumListScreen(repository: LocalSongRepository, modifier: Modifier = Modifier) {
+fun AlbumListScreen(repository: LocalSongRepository, navController: NavHostController, modifier: Modifier = Modifier) {
     val albums by repository.allAlbums.collectAsState(initial = emptyList())
     val sortedAlbums = albums.sortedBy { it.name }
 
     FastScrollLazyColumn(
         modifier = modifier.fillMaxSize(),
         items = sortedAlbums,
-        itemContent = { album -> ListItem(headlineContent = { Text(album.name) }) },
+        itemContent = { album ->
+            ListItem(
+                headlineContent = { Text(album.name) },
+                modifier = Modifier.clickable { navController.navigate("album_songs/${album.id}") }
+            )
+        },
         indicatorContent = { album -> album.name.firstOrNull()?.uppercase() ?: "#" },
         emptyContent = {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -267,7 +279,12 @@ fun AlbumListScreen(repository: LocalSongRepository, modifier: Modifier = Modifi
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ArtistAlbumListScreen(repository: LocalSongRepository, artistId: Long, onBack: () -> Unit) {
+fun ArtistAlbumListScreen(
+    repository: LocalSongRepository,
+    artistId: Long,
+    navController: NavHostController,
+    onBack: () -> Unit
+) {
     val artistName by repository.getArtistNameById(artistId).collectAsState(initial = "Albums")
     val albums by repository.getAlbumsByArtistId(artistId).collectAsState(initial = emptyList())
     val sortedAlbums = albums.sortedBy { it.name }
@@ -291,7 +308,12 @@ fun ArtistAlbumListScreen(repository: LocalSongRepository, artistId: Long, onBac
         FastScrollLazyColumn(
             modifier = Modifier.fillMaxSize().padding(innerPadding),
             items = sortedAlbums,
-            itemContent = { album -> ListItem(headlineContent = { Text(album.name) }) },
+            itemContent = { album ->
+                ListItem(
+                    headlineContent = { Text(album.name) },
+                    modifier = Modifier.clickable { navController.navigate("album_songs/${album.id}") }
+                )
+            },
             indicatorContent = { album -> album.name.firstOrNull()?.uppercase() ?: "#" },
             emptyContent = {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -301,6 +323,59 @@ fun ArtistAlbumListScreen(repository: LocalSongRepository, artistId: Long, onBac
         )
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AlbumSongListScreen(repository: LocalSongRepository, albumId: Long, onBack: () -> Unit) {
+    val album by repository.getAlbumById(albumId).collectAsState(initial = null)
+    val songs by repository.getSongsByAlbumId(albumId).collectAsState(initial = emptyList())
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(album?.name ?: "Songs") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.primary,
+                )
+            )
+        }
+    ) { innerPadding ->
+        LazyColumn(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            if (songs.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier.fillParentMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No songs found for this album.")
+                    }
+                }
+            } else {
+                items(songs) { song ->
+                    ListItem(
+                        headlineContent = { Text(song.title) },
+                        supportingContent = { Text(song.artist) },
+                        leadingContent = {
+                            Box(
+                                modifier = Modifier.width(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(song.track.toString())
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 fun SongListItem(song: Song) {

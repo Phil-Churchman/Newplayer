@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,6 +29,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -36,6 +39,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
@@ -84,6 +88,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -115,6 +121,7 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector)
     data object Artists : Screen("artists", "Artists", Icons.Default.Person)
     data object Albums : Screen("albums", "Albums", Icons.Default.Album)
     data object Queue : Screen("queue", "Queue", Icons.Default.QueueMusic)
+    data object Profiles : Screen("profiles", "Profiles", Icons.Default.AccountCircle)
 }
 
 val navigationItems = listOf(
@@ -122,18 +129,27 @@ val navigationItems = listOf(
     Screen.Artists,
     Screen.Albums,
     Screen.Queue,
+    Screen.Profiles
 )
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var database: AppDatabase
     private lateinit var repository: LocalSongRepository
+    private lateinit var mpdClient: MpdClient
+
+    private val profilesViewModel: ProfilesViewModel by viewModels {
+        ProfileViewModelFactory(database, mpdClient, repository)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         database = AppDatabase.getDatabase(applicationContext)
         repository = LocalSongRepository(this,
             database.songDao(), database.artistDao(), database.albumDao()
         )
+        mpdClient = MpdClient()
+
         setContent {
             NewPlayerTheme {
                 var isScanning by remember { mutableStateOf(false) }
@@ -212,12 +228,24 @@ class MainActivity : ComponentActivity() {
                         scanAction()
                     },
                     mediaController = mediaController,
-                    mediaItems = mediaItems
+                    mediaItems = mediaItems,
+                    profilesViewModel = profilesViewModel
                 )
             }
         }
     }
 }
+
+class ProfileViewModelFactory(private val database: AppDatabase, private val mpdClient: MpdClient, private val repository: LocalSongRepository) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(ProfilesViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return ProfilesViewModel(database.profileDao(), mpdClient, repository) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
+    }
+}
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -226,7 +254,8 @@ fun AppRoot(
     isScanning: Boolean,
     onScanSongs: () -> Unit,
     mediaController: MediaController?,
-    mediaItems: List<MediaItem>
+    mediaItems: List<MediaItem>,
+    profilesViewModel: ProfilesViewModel
 ) {
     val navController = rememberNavController()
     val songs by repository.allSongs.collectAsState(initial = emptyList())
@@ -332,6 +361,9 @@ fun AppRoot(
             }
             composable(Screen.Queue.route) {
                 QueueScreen(repository = repository, mediaController = mediaController)
+            }
+            composable(Screen.Profiles.route) {
+                ProfilesScreen(viewModel = profilesViewModel)
             }
             composable("player") {
                 FullScreenPlayer(

@@ -1,0 +1,262 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 9,
+    "identityHash": "844f2bcfa91fbb3c7c2bebd57b0bd2c8",
+    "entities": [
+      {
+        "tableName": "profiles",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `host` TEXT NOT NULL, `port` INTEGER NOT NULL, `isActive` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "host",
+            "columnName": "host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "port",
+            "columnName": "port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isActive",
+            "columnName": "isActive",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "songs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `title` TEXT NOT NULL, `artist` TEXT NOT NULL, `album` TEXT NOT NULL, `path` TEXT NOT NULL, `duration` INTEGER NOT NULL, `albumArtist` TEXT NOT NULL, `albumId` INTEGER NOT NULL, `track` INTEGER NOT NULL, `profileId` INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(`profileId`) REFERENCES `profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "artist",
+            "columnName": "artist",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "album",
+            "columnName": "album",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "path",
+            "columnName": "path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "duration",
+            "columnName": "duration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "albumArtist",
+            "columnName": "albumArtist",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "albumId",
+            "columnName": "albumId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "track",
+            "columnName": "track",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "profiles",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "profileId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "artists",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `profileId` INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(`profileId`) REFERENCES `profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_artists_name",
+            "unique": true,
+            "columnNames": [
+              "name"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_artists_name` ON `${TABLE_NAME}` (`name`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "profiles",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "profileId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "albums",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `artistId` INTEGER NOT NULL, `artwork` BLOB, `profileId` INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(`profileId`) REFERENCES `profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "artistId",
+            "columnName": "artistId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "artwork",
+            "columnName": "artwork",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "profileId",
+            "columnName": "profileId",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_albums_name",
+            "unique": true,
+            "columnNames": [
+              "name"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_albums_name` ON `${TABLE_NAME}` (`name`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "profiles",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "profileId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '844f2bcfa91fbb3c7c2bebd57b0bd2c8')"
+    ]
+  }
+}

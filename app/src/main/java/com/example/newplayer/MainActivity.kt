@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -145,6 +146,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         database = AppDatabase.getDatabase(applicationContext)
         repository = LocalSongRepository(
             this,
@@ -347,26 +349,29 @@ fun AppRoot(
 //            }
 //        }
     ) { innerPadding ->
-        NavHost(navController, startDestination = Screen.Songs.route, modifier = Modifier.padding(innerPadding)) {
+        NavHost(navController, startDestination = Screen.Songs.route, modifier = Modifier.fillMaxSize()) {
             composable(Screen.Songs.route) {
                 SongListScreen(
                     repository = repository,
                     isScanning = isScanning,
+                    modifier = Modifier.padding(innerPadding),
                     mediaController = mediaController,
                     mediaItems = mediaItems
                 )
             }
             composable(Screen.Artists.route) {
-                ArtistListScreen(repository, navController)
+                ArtistListScreen(repository, navController, modifier = Modifier.padding(innerPadding))
             }
             composable(Screen.Albums.route) {
-                AlbumListScreen(repository, navController)
+                AlbumListScreen(repository, navController, modifier = Modifier.padding(innerPadding))
             }
             composable(Screen.Queue.route) {
-                QueueScreen(repository = repository, mediaController = mediaController)
+                QueueScreen(repository = repository, mediaController = mediaController, modifier = Modifier.padding(innerPadding))
             }
             composable(Screen.Profiles.route) {
-                ProfilesScreen(viewModel = profilesViewModel)
+                Box(modifier = Modifier.padding(innerPadding)) {
+                    ProfilesScreen(viewModel = profilesViewModel)
+                }
             }
             composable("player") {
                 FullScreenPlayer(

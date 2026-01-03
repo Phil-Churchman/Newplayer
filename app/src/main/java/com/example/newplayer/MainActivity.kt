@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -361,6 +362,7 @@ fun AppRoot(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MiniPlayer(repository: LocalSongRepository, mediaController: MediaController, onClick: () -> Unit) {
     var currentMediaItem by remember { mutableStateOf(mediaController.currentMediaItem) }
@@ -415,11 +417,15 @@ fun MiniPlayer(repository: LocalSongRepository, mediaController: MediaController
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = currentMediaItem?.mediaMetadata?.title?.toString() ?: "Unknown Title",
-                style = MaterialTheme.typography.titleMedium
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                modifier = Modifier.basicMarquee()
             )
             Text(
                 text = currentMediaItem?.mediaMetadata?.artist?.toString() ?: "Unknown Artist",
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                modifier = Modifier.basicMarquee()
             )
         }
         Row {
@@ -831,7 +837,7 @@ fun formatDuration(ms: Long): String {
     return String.format("%02d:%02d", minutes, seconds)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun FullScreenPlayer(
     repository: LocalSongRepository,
@@ -932,12 +938,14 @@ fun FullScreenPlayer(
                 text = currentMediaItem?.mediaMetadata?.title?.toString() ?: "Unknown Title",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1
+                maxLines = 1,
+                modifier = Modifier.basicMarquee()
             )
             Text(
                 text = currentMediaItem?.mediaMetadata?.artist?.toString() ?: "Unknown Artist",
                 style = MaterialTheme.typography.titleMedium,
-                maxLines = 1
+                maxLines = 1,
+                modifier = Modifier.basicMarquee()
             )
 
             Spacer(modifier = Modifier.height(16.dp))

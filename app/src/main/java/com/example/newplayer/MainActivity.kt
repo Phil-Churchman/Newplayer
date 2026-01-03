@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
@@ -145,8 +146,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         database = AppDatabase.getDatabase(applicationContext)
-        repository = LocalSongRepository(this,
-            database.songDao(), database.artistDao(), database.albumDao()
+        repository = LocalSongRepository(
+            this,
+            database.songDao(), database.artistDao(), database.albumDao(),
+            profileDao = database.profileDao()
         )
         mpdClient = MpdClient()
 
@@ -277,13 +280,13 @@ fun AppRoot(
                         titleContentColor = MaterialTheme.colorScheme.primary,
                     ),
                     actions = {
-                        if (songs.isNotEmpty()) {
+//                        if (songs.isNotEmpty()) {
                             IconButton(onClick = { showMenu = !showMenu }) {
                                 Icon(
                                     imageVector = Icons.Default.MoreVert,
                                     contentDescription = "More options"
                                 )
-                            }
+//                            }
                             DropdownMenu(
                                 expanded = showMenu,
                                 onDismissRequest = { showMenu = false }
@@ -332,17 +335,17 @@ fun AppRoot(
                 }
             }
         },
-        floatingActionButton = {
-            if (songs.isEmpty() && !isPlayerScreen) {
-                FloatingActionButton(onClick = { if (!isScanning) onScanSongs() }) {
-                    if (isScanning) {
-                        CircularProgressIndicator(modifier = Modifier.size(28.dp))
-                    } else {
-                        Icon(Icons.Default.Search, contentDescription = "Scan for songs")
-                    }
-                }
-            }
-        }
+//        floatingActionButton = {
+//            if (songs.isEmpty() && !isPlayerScreen) {
+//                FloatingActionButton(onClick = { if (!isScanning) onScanSongs() }) {
+//                    if (isScanning) {
+//                        CircularProgressIndicator(modifier = Modifier.size(28.dp))
+//                    } else {
+//                        Icon(Icons.Default.Search, contentDescription = "Scan for songs")
+//                    }
+//                }
+//            }
+//        }
     ) { innerPadding ->
         NavHost(navController, startDestination = Screen.Songs.route, modifier = Modifier.padding(innerPadding)) {
             composable(Screen.Songs.route) {
@@ -378,7 +381,7 @@ fun AppRoot(
             ) { backStackEntry ->
                 val artistId = backStackEntry.arguments?.getLong("artistId")
                 if (artistId != null) {
-                    ArtistAlbumListScreen(repository, artistId, navController, onBack = { navController.popBackStack() })
+                    ArtistAlbumListScreen(repository, artistId, navController)
                 }
             }
             composable(
@@ -387,14 +390,14 @@ fun AppRoot(
             ) { backStackEntry ->
                 val albumId = backStackEntry.arguments?.getLong("albumId")
                 if (albumId != null) {
-                    AlbumSongListScreen(repository, albumId, onBack = { navController.popBackStack() }, mediaController, mediaItems)
+                    AlbumSongListScreen(repository, albumId, navController, mediaController, mediaItems)
                 }
             }
         }
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MiniPlayer(repository: LocalSongRepository, mediaController: MediaController, onClick: () -> Unit) {
     var currentMediaItem by remember { mutableStateOf(mediaController.currentMediaItem) }
@@ -709,8 +712,7 @@ fun AlbumListScreen(repository: LocalSongRepository, navController: NavHostContr
 fun ArtistAlbumListScreen(
     repository: LocalSongRepository,
     artistId: Long,
-    navController: NavHostController,
-    onBack: () -> Unit
+    navController: NavHostController
 ) {
     val artistName by repository.getArtistNameById(artistId).collectAsState(initial = "Albums")
     val albums by repository.getAlbumsByArtistId(artistId).collectAsState(initial = emptyList())
@@ -721,7 +723,7 @@ fun ArtistAlbumListScreen(
             TopAppBar(
                 title = { Text(artistName ?: "Albums") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { navController.navigateUp() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },
@@ -768,7 +770,7 @@ fun ArtistAlbumListScreen(
 fun AlbumSongListScreen(
     repository: LocalSongRepository,
     albumId: Long,
-    onBack: () -> Unit,
+    navController: NavHostController,
     mediaController: MediaController?,
     mediaItems: List<MediaItem>
 ) {
@@ -781,7 +783,7 @@ fun AlbumSongListScreen(
             TopAppBar(
                 title = { Text(album?.name ?: "Songs") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { navController.navigateUp() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },
@@ -869,7 +871,7 @@ fun formatDuration(ms: Long): String {
     return String.format("%02d:%02d", minutes, seconds)
 }
 
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun FullScreenPlayer(
     repository: LocalSongRepository,

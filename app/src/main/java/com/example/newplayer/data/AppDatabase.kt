@@ -6,14 +6,13 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.example.player.data.Profile
-import com.example.player.data.ProfileDao
 
 @Database(
     entities = [Profile::class, Song::class, Artist::class, Album::class],
-    version = 9,
+    version = 10,
     exportSchema = true,
     autoMigrations = [
-        AutoMigration(from = 8, to = 9)
+        AutoMigration(from = 9, to = 10)
     ]
 )
 abstract class AppDatabase : RoomDatabase() {

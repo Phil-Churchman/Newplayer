@@ -1,4 +1,4 @@
-package com.example.player.data
+package com.example.newplayer.data
 
 import androidx.room.Dao
 import androidx.room.Delete
@@ -8,6 +8,7 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
+import com.example.player.data.Profile
 
 @Dao
 interface ProfileDao {
@@ -50,4 +51,7 @@ interface ProfileDao {
 
     @Query("SELECT EXISTS(SELECT 1 FROM profiles WHERE name = 'Local' AND isActive = 1)")
     fun isLocalProfileActiveFlow(): Flow<Boolean>
+
+    @Query("SELECT id FROM profiles WHERE name = 'Local' LIMIT 1")
+    suspend fun getLocalProfileId(): Long?
 }

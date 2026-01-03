@@ -6,7 +6,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,7 +13,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,12 +20,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -117,8 +113,6 @@ fun ProfilesScreen(viewModel: ProfilesViewModel) {
                 ProfileItem(
                     profile = profile,
                     isError = uiState.connectionErrorProfileId == profile.id,
-                    isSyncing = uiState.syncingProfileId == profile.id,
-                    syncStatus = if (uiState.lastSyncProfileId == profile.id) uiState.lastSyncStatus else SyncStatus.IDLE,
                     onClick = {
                         if (it.name == "Local") {
                             // Request permission before setting active
@@ -133,14 +127,6 @@ fun ProfilesScreen(viewModel: ProfilesViewModel) {
                     },
                     onDelete = {
                         showDeleteConfirmation = it
-                    },
-                    onSync = {
-                        if (it.name == "Local") {
-                            // Request permission before syncing
-                            requestPermissionAndExecute { viewModel.syncLibrary(it) }
-                        } else {
-                            viewModel.syncLibrary(it)
-                        }
                     }
                 )
             }
@@ -205,12 +191,9 @@ fun ProfilesScreen(viewModel: ProfilesViewModel) {
 fun ProfileItem(
     profile: Profile,
     isError: Boolean,
-    isSyncing: Boolean,
-    syncStatus: SyncStatus,
     onClick: (Profile) -> Unit,
     onEdit: (Profile) -> Unit,
     onDelete: (Profile) -> Unit,
-    onSync: (Profile) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val isLocalProfile = profile.name == "Local"
@@ -245,49 +228,8 @@ fun ProfileItem(
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
-                when {
-                    isSyncing -> {
-                        Text(
-                            text = "Syncing...",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-
-                    syncStatus == SyncStatus.SUCCESS -> {
-                        Text(
-                            text = "Sync complete",
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-
-                    syncStatus == SyncStatus.FAILED -> {
-                        Text(
-                            text = "Sync failed",
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
             }
             Spacer(modifier = Modifier.width(16.dp))
-
-            // Show sync button for active profiles.
-            // For remote profiles, hide it if there's a connection error.
-            if (profile.isActive && (isLocalProfile || !isError)) {
-                Box(
-                    modifier = Modifier.size(48.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isSyncing) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                    } else {
-                        IconButton(onClick = { onSync(profile) }) {
-                            Icon(Icons.Default.Sync, contentDescription = "Sync Library")
-                        }
-                    }
-                }
-            }
 
             if (!isLocalProfile) {
                 IconButton(onClick = { onEdit(profile) }) {
@@ -308,7 +250,6 @@ fun ProfileEditDialog(
     onSave: (String, String, Int) -> Unit
 ) {
     var name by remember { mutableStateOf(profile?.name ?: "") }
-    // Corrected line below
     var host by remember { mutableStateOf(profile?.host ?: "") }
     var port by remember { mutableStateOf(profile?.port?.toString() ?: "6600") }
 

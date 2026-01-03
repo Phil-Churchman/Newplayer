@@ -15,7 +15,8 @@ class LocalSongRepository(
     private val context: Context,
     private val songDao: SongDao,
     private val artistDao: ArtistDao,
-    private val albumDao: AlbumDao
+    private val albumDao: AlbumDao,
+    private val profileDao: ProfileDao
 ) {
 
     val allSongs: Flow<List<Song>> = songDao.getAll()
@@ -98,9 +99,11 @@ class LocalSongRepository(
 
 
     suspend fun scanForSongs(): List<MediaItem> {
-        songDao.deleteAll()
-        artistDao.deleteAll()
-        albumDao.deleteAll()
+        val localProfileId = profileDao.getLocalProfileId() ?: return emptyList()
+
+        songDao.deleteByProfileId(localProfileId)
+        artistDao.deleteByProfileId(localProfileId)
+        albumDao.deleteByProfileId(localProfileId)
 
         data class RawSongInfo(
             val title: String,
@@ -172,7 +175,7 @@ class LocalSongRepository(
 
         if (rawSongs.isNotEmpty()) {
             val uniqueArtistNames = rawSongs.map { it.albumArtist }.filter { it.isNotBlank() }.distinct()
-            val artistsToInsert = uniqueArtistNames.map { Artist(name = it) }
+            val artistsToInsert = uniqueArtistNames.map { Artist(name = it, profileId = localProfileId) }
             artistDao.insertAll(artistsToInsert)
             val artistIdMap = artistDao.getAll().first().associate { it.name to it.id }
 
@@ -183,7 +186,7 @@ class LocalSongRepository(
                     val artistId = artistIdMap[firstSong.albumArtist]
                     if (artistId != null) {
                         val artwork = getAndResizeArtwork(firstSong.albumIdFromMediaStore)
-                        Album(name = albumName, artistId = artistId, artwork = artwork)
+                        Album(name = albumName, artistId = artistId, artwork = artwork, profileId = localProfileId)
                     } else {
                         null
                     }
@@ -202,7 +205,8 @@ class LocalSongRepository(
                         duration = rawSong.duration,
                         albumArtist = rawSong.albumArtist,
                         albumId = albumId,
-                        track = rawSong.track
+                        track = rawSong.track,
+                        profileId = localProfileId
                     )
                 } else {
                     null

@@ -17,19 +17,15 @@ interface AlbumDao {
     @Query("DELETE FROM albums")
     suspend fun deleteAll()
 
+    @Query("DELETE FROM albums WHERE profileId = :profileId")
+    suspend fun deleteByProfileId(profileId: Long)
+
     @Query("SELECT * FROM albums WHERE artistId = :artistId ORDER BY name ASC")
     fun getAlbumsByArtistId(artistId: Long): Flow<List<Album>>
 
     @Query("SELECT * FROM albums WHERE id = :albumId")
     fun getAlbumById(albumId: Long): Flow<Album?>
 
-    @Query("""
-        SELECT
-            ar.id as artistId,
-            ar.name as artistName,
-            (SELECT al.artwork FROM albums al WHERE al.artistId = ar.id ORDER BY al.name ASC LIMIT 1) as artwork
-        FROM artists ar
-        ORDER BY ar.name ASC
-    """)
+    @Query("SELECT ar.id as artistId, ar.name as artistName, (SELECT al.artwork FROM albums al WHERE al.artistId = ar.id ORDER BY al.name ASC LIMIT 1) as artwork FROM artists ar ORDER BY ar.name ASC")
     fun getArtistsWithArtwork(): Flow<List<ArtistWithArtwork>>
 }

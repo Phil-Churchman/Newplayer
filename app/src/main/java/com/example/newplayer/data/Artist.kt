@@ -9,7 +9,7 @@ import com.example.player.data.Profile
 
 @Entity(
     tableName = "artists",
-    indices = [Index(value = ["name"], unique = true)],
+    indices = [Index(value = ["name"], unique = true), Index(value = ["profileId"])],
     foreignKeys = [ForeignKey(
         entity = Profile::class,
         parentColumns = ["id"],

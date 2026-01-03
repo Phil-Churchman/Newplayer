@@ -180,10 +180,14 @@ class LocalSongRepository(
             val artistIdMap = artistDao.getAll().first().associate { it.name to it.id }
 
             val albumsToInsert = rawSongs
-                .groupBy { it.album }
-                .mapNotNull { (albumName, songsInAlbum) ->
-                    val firstSong = songsInAlbum.first()
-                    val artistId = artistIdMap[firstSong.albumArtist]
+                // 1. Correctly group by a Pair of album and albumArtist
+                .groupBy { Pair(it.album, it.albumArtist) }
+                .mapValues { (_, songsInAlbum) -> songsInAlbum.first() }
+                .mapNotNull { (key, firstSong) ->
+                    // 2. Destructure the key and get the artistId
+                    val (albumName, albumArtist) = key
+                    val artistId = artistIdMap[albumArtist]
+
                     if (artistId != null) {
                         val artwork = getAndResizeArtwork(firstSong.albumIdFromMediaStore)
                         Album(name = albumName, artistId = artistId, artwork = artwork, profileId = localProfileId)
@@ -192,10 +196,14 @@ class LocalSongRepository(
                     }
                 }
             albumDao.insertAll(albumsToInsert)
-            val albumIdMap = albumDao.getAll().first().associate { it.name to it.id }
+            // You were also missing .first() here in your provided snippet
+            val albumIdMap = albumDao.getAll().first().associate { Pair(it.name, it.artistId) to it.id }
 
             val songsToInsert = rawSongs.mapNotNull { rawSong ->
-                val albumId = albumIdMap[rawSong.album]
+                // Adjust the lookup to use the composite key
+                val artistId = artistIdMap[rawSong.albumArtist]
+                val albumId = if (artistId != null) albumIdMap[Pair(rawSong.album, artistId)] else null
+
                 if (albumId != null) {
                     Song(
                         title = rawSong.title,

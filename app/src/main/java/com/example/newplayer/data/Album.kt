@@ -9,13 +9,20 @@ import com.example.player.data.Profile
 
 @Entity(
     tableName = "albums",
-    indices = [Index(value = ["name"], unique = true)],
+    indices = [Index(value = ["name", "artistId"], unique = true), Index(value = ["profileId"])],
     foreignKeys = [ForeignKey(
         entity = Profile::class,
         parentColumns = ["id"],
         childColumns = ["profileId"],
         onDelete = ForeignKey.CASCADE
-    )
+    ),
+        ForeignKey(
+            entity = Artist::class,
+            parentColumns = ["id"],
+            childColumns = ["artistId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+
     ]
 )
 data class Album(

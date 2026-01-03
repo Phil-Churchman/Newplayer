@@ -3,10 +3,12 @@ package com.example.newplayer.data
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.player.data.Profile
 
 @Entity(tableName = "songs",
+    indices = [Index(value = ["path"], unique = true), Index(value = ["profileId"])],
     foreignKeys = [ForeignKey(
         entity = Profile::class,
         parentColumns = ["id"],

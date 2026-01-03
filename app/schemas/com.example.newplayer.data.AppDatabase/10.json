@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 10,
-    "identityHash": "844f2bcfa91fbb3c7c2bebd57b0bd2c8",
+    "identityHash": "86fb6461682a09d235785ac5ef8ecc66",
     "entities": [
       {
         "tableName": "profiles",
@@ -118,6 +118,26 @@
             "id"
           ]
         },
+        "indices": [
+          {
+            "name": "index_songs_path",
+            "unique": true,
+            "columnNames": [
+              "path"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_songs_path` ON `${TABLE_NAME}` (`path`)"
+          },
+          {
+            "name": "index_songs_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_songs_profileId` ON `${TABLE_NAME}` (`profileId`)"
+          }
+        ],
         "foreignKeys": [
           {
             "table": "profiles",
@@ -171,6 +191,15 @@
             ],
             "orders": [],
             "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_artists_name` ON `${TABLE_NAME}` (`name`)"
+          },
+          {
+            "name": "index_artists_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_artists_profileId` ON `${TABLE_NAME}` (`profileId`)"
           }
         ],
         "foreignKeys": [
@@ -189,7 +218,7 @@
       },
       {
         "tableName": "albums",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `artistId` INTEGER NOT NULL, `artwork` BLOB, `profileId` INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(`profileId`) REFERENCES `profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `artistId` INTEGER NOT NULL, `artwork` BLOB, `profileId` INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(`profileId`) REFERENCES `profiles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`artistId`) REFERENCES `artists`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -230,13 +259,23 @@
         },
         "indices": [
           {
-            "name": "index_albums_name",
+            "name": "index_albums_name_artistId",
             "unique": true,
             "columnNames": [
-              "name"
+              "name",
+              "artistId"
             ],
             "orders": [],
-            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_albums_name` ON `${TABLE_NAME}` (`name`)"
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_albums_name_artistId` ON `${TABLE_NAME}` (`name`, `artistId`)"
+          },
+          {
+            "name": "index_albums_profileId",
+            "unique": false,
+            "columnNames": [
+              "profileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_albums_profileId` ON `${TABLE_NAME}` (`profileId`)"
           }
         ],
         "foreignKeys": [
@@ -250,13 +289,24 @@
             "referencedColumns": [
               "id"
             ]
+          },
+          {
+            "table": "artists",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "artistId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
           }
         ]
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '844f2bcfa91fbb3c7c2bebd57b0bd2c8')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '86fb6461682a09d235785ac5ef8ecc66')"
     ]
   }
 }

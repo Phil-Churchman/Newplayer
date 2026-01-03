@@ -386,7 +386,7 @@ fun AppRoot(
             ) { backStackEntry ->
                 val artistId = backStackEntry.arguments?.getLong("artistId")
                 if (artistId != null) {
-                    ArtistAlbumListScreen(repository, artistId, navController)
+                    ArtistAlbumListScreen(repository, artistId, navController, modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding()))
                 }
             }
             composable(
@@ -395,7 +395,7 @@ fun AppRoot(
             ) { backStackEntry ->
                 val albumId = backStackEntry.arguments?.getLong("albumId")
                 if (albumId != null) {
-                    AlbumSongListScreen(repository, albumId, navController, mediaController, mediaItems)
+                    AlbumSongListScreen(repository, albumId, navController, mediaController, mediaItems, modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding()))
                 }
             }
         }
@@ -717,7 +717,8 @@ fun AlbumListScreen(repository: LocalSongRepository, navController: NavHostContr
 fun ArtistAlbumListScreen(
     repository: LocalSongRepository,
     artistId: Long,
-    navController: NavHostController
+    navController: NavHostController,
+    modifier: Modifier = Modifier
 ) {
     val artistName by repository.getArtistNameById(artistId).collectAsState(initial = "Albums")
     val albums by repository.getAlbumsByArtistId(artistId).collectAsState(initial = emptyList())
@@ -742,7 +743,8 @@ fun ArtistAlbumListScreen(
         FastScrollLazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .then(modifier),
             items = albums,
             itemContent = { album ->
                 ListItem(
@@ -777,7 +779,8 @@ fun AlbumSongListScreen(
     albumId: Long,
     navController: NavHostController,
     mediaController: MediaController?,
-    mediaItems: List<MediaItem>
+    mediaItems: List<MediaItem>,
+    modifier: Modifier = Modifier
 ) {
     val album by repository.getAlbumById(albumId).collectAsState(initial = null)
     val songs by repository.getSongsByAlbumId(albumId).collectAsState(initial = emptyList())
@@ -816,7 +819,9 @@ fun AlbumSongListScreen(
         }
     ) { innerPadding ->
         Column(modifier = Modifier
+            .fillMaxSize()
             .padding(innerPadding)
+            .then(modifier)
         ) {
             AsyncImage(
                 model = album?.artwork,

@@ -1,6 +1,6 @@
 package com.example.newplayer
 
-import com.example.player.data.Profile
+import com.example.newplayer.data.Profile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader

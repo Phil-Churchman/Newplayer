@@ -3,7 +3,7 @@ package com.example.newplayer
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.player.data.Profile
+import com.example.newplayer.data.Profile
 import com.example.newplayer.data.ProfileDao
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay

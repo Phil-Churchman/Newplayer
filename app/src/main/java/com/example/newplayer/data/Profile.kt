@@ -1,4 +1,4 @@
-package com.example.player.data
+package com.example.newplayer.data
 
 import androidx.room.Entity
 import androidx.room.Ignore

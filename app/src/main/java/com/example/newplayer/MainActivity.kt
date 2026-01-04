@@ -799,15 +799,17 @@ fun AlbumSongListScreen(
                     if (songs.isNotEmpty()) {
                         IconButton(onClick = {
                             mediaController?.let { controller ->
-                                val albumMediaItems = mediaItems.filter { mediaItem -> songs.any { it.id.toString() == mediaItem.mediaId } }
+                                val albumMediaItems = songs.mapNotNull { song -> mediaItems.find { it.mediaId == song.id.toString() } }
                                 if (albumMediaItems.isNotEmpty()) {
                                     controller.setMediaItems(albumMediaItems, 0, 0)
                                     controller.prepare()
                                     controller.play()
                                 }
                             }
-                        }) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = "Play album")
+                        },
+                            modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = "Play album",
+                                modifier = Modifier.fillMaxSize(), tint = Color.White)
                         }
                     }
                 },
@@ -1023,11 +1025,13 @@ fun FullScreenPlayer(
                 IconButton(onClick = { mediaController.seekToPreviousMediaItem() }) {
                     Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(48.dp))
                 }
-                IconButton(onClick = { if (isPlaying) mediaController.pause() else mediaController.play() }) {
+                IconButton(onClick = { if (isPlaying) mediaController.pause() else mediaController.play() },
+                    modifier = Modifier.size(70.dp)
+                ) {
                     Icon(
                         if (isPlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
                         contentDescription = "Play/Pause",
-                        modifier = Modifier.size(72.dp)
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
                 IconButton(onClick = { mediaController.seekToNextMediaItem() }) {

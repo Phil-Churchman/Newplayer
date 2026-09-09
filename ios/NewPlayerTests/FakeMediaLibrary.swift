@@ -31,6 +31,16 @@ final class FakeMediaLibrary: MediaLibraryProviding {
 
     func assetURL(forPersistentID persistentID: String) -> URL? { assetURLs[persistentID] }
 
+    /// Track ids whose asset refuses to open despite the library claiming it is there.
+    var unopenableIDs: Set<String> = []
+    private(set) var playabilityChecks: [String] = []
+
+    func isPlayable(persistentID: String) async -> Bool {
+        playabilityChecks.append(persistentID)
+        guard assetURLs[persistentID] != nil else { return false }
+        return !unopenableIDs.contains(persistentID)
+    }
+
     func artworkData(forPersistentID persistentID: String) -> Data? {
         artworkRenderCount += 1
         artworkRequests.append(persistentID)

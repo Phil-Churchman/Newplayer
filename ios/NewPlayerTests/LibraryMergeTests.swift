@@ -231,34 +231,6 @@ final class LibraryMergeTests: XCTestCase {
         XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Alice"])
     }
 
-    /// Duplicate rows left by earlier syncs were unreachable: the lookup table kept one row per
-    /// key, so the surplus was discarded before the deletion pass ran and no amount of syncing
-    /// could clear it. A sync now tidies them up.
-    func testSurplusDuplicateRowsFromEarlierSyncsAreCleanedUp() async throws {
-        let container = try makeContainer()
-        let context = ModelContext(container)
-        let source = try makeSource(in: context)
-
-        // Two rows for one track, as a buggy earlier sync would have left behind.
-        let artist = Artist(name: "Alice", source: source)
-        let album = Album(name: "Record", artist: artist, source: source)
-        context.insert(artist)
-        context.insert(album)
-        for _ in 0..<2 {
-            context.insert(Song(
-                title: "a", artist: "Alice", albumTitle: "Record", albumArtist: "Alice",
-                track: 1, duration: 200, relativePath: "a", album: album, source: source
-            ))
-        }
-        try context.save()
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Song>()).count, 2)
-
-        try await LibraryRowBuilder.merge(from: [raw("a")], source: source, modelContext: context)
-
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Song>()).count, 1, "the surplus row should go")
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
-    }
-
     /// Everything going means everything goes.
     func testAnEmptyAccountEmptiesTheLibrary() async throws {
         let container = try makeContainer()

@@ -165,8 +165,9 @@ final class MediaLibraryImportServiceTests: XCTestCase {
     // MARK: - Album artist, compilations, and album covers
 
     /// iTunes libraries are tagged album-first: the per-track artist is often a featured credit,
-    /// and using it splits a release across the Artists list.
-    func testTheAlbumArtistIsUsedAsTheArtist() async throws {
+    /// and grouping by it splits a release across the Artists list. The album artist therefore
+    /// names the release — while each row keeps its own performer, asserted separately.
+    func testTheAlbumArtistNamesTheRelease() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
@@ -179,7 +180,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
         let songs = try context.fetch(FetchDescriptor<Song>())
-        XCTAssertEqual(Set(songs.map(\.artist)), ["Alice"], "the album artist, not the track credit")
+        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Alice"], "the album artist names the release")
         XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Alice"])
     }
 
@@ -199,7 +200,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
 
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
-        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Compilation"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Compilation"])
     }
 
     /// A Various Artists record would otherwise appear once per guest in the Artists list.
@@ -217,7 +218,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
 
         let songs = try context.fetch(FetchDescriptor<Song>())
         XCTAssertEqual(songs.count, 3)
-        XCTAssertEqual(Set(songs.map(\.artist)), ["Compilation"], "every track in the album, not just some")
+        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Compilation"], "every track in the album, not just some")
         XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
         XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
     }
@@ -234,7 +235,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
 
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
-        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Alice"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Alice"])
     }
 
     /// Compilations are decided per album — a mixed record must not drag a normal one with it.
@@ -251,7 +252,9 @@ final class MediaLibraryImportServiceTests: XCTestCase {
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
         let songs = try context.fetch(FetchDescriptor<Song>())
-        let byTitle = Dictionary(uniqueKeysWithValues: songs.map { ($0.title, $0.artist) })
+        // Compared on albumArtist: that is what the compilation rule sets, while `artist` stays
+        // the track's own performer.
+        let byTitle = Dictionary(uniqueKeysWithValues: songs.map { ($0.title, $0.albumArtist) })
         XCTAssertEqual(byTitle["One"], "Compilation")
         XCTAssertEqual(byTitle["Two"], "Compilation")
         XCTAssertEqual(byTitle["Solo"], "Carol")
@@ -321,5 +324,92 @@ final class MediaLibraryImportServiceTests: XCTestCase {
         let album = try XCTUnwrap(try context.fetch(FetchDescriptor<Album>()).first)
         XCTAssertNotNil(album.artwork, "the cover the library returned should have been saved")
         XCTAssertNotNil(album.thumbnail)
+    }
+
+    /// The same rule for the Music library: rows show the track's performer, while the release
+    /// artist still names the album and groups the Artists screen.
+    func testEachTrackKeepsItsOwnArtist() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let library = FakeMediaLibrary()
+        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Mixtape", albumArtist: "Various", track: 1)
+        library.addTrack(id: "2", title: "Two", artist: "Bob", album: "Mixtape", albumArtist: "Various", track: 2)
+
+        try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
+
+        let songs = try context.fetch(FetchDescriptor<Song>()).sorted { $0.track < $1.track }
+        XCTAssertEqual(songs.map(\.artist), ["Alice", "Bob"])
+        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Compilation"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
+    }
+
+    // MARK: - Confirming tracks open, during the scan
+
+    /// The metadata checks are answered from the library's own records. A track can satisfy them
+    /// and still refuse to open — an encoding AVFoundation won't decode, or a download the
+    /// system has evicted. Caught during the scan rather than on a tap.
+    func testATrackThatWontOpenIsExcludedByTheScan() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let library = FakeMediaLibrary()
+        library.addTrack(id: "good", title: "Plays")
+        library.addTrack(id: "broken", title: "Refuses")
+        library.unopenableIDs = ["broken"]
+
+        let result = try await MediaLibraryImportService.rescan(
+            source: source, provider: library, modelContext: context
+        )
+
+        XCTAssertEqual(result.imported, 1)
+        XCTAssertEqual(result.skippedUnplayable, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Song>()).map(\.title), ["Plays"])
+    }
+
+    /// Every candidate is checked — a track quietly assumed good is the case this exists to stop.
+    func testEveryCandidateIsChecked() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let library = FakeMediaLibrary()
+        for index in 1...20 {
+            library.addTrack(id: "\(index)", title: "T\(index)", track: index)
+        }
+
+        try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
+
+        XCTAssertEqual(Set(library.playabilityChecks).count, 20)
+    }
+
+    /// DRM and undownloaded tracks are ruled out before any of this, so they cost no checks.
+    func testTracksRuledOutByMetadataAreNotChecked() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let library = FakeMediaLibrary()
+        library.addTrack(id: "playable", title: "Plays")
+        library.addTrack(id: "protected", title: "Apple Music", playable: false)
+
+        try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
+
+        XCTAssertEqual(library.playabilityChecks, ["playable"])
+    }
+
+    /// Checking happens in batches, so order must be restored afterwards — track order decides
+    /// which cover an album takes.
+    func testTrackOrderSurvivesTheConcurrentCheck() async {
+        let library = FakeMediaLibrary()
+        for index in 1...25 {
+            library.addTrack(id: "\(index)", title: "T\(index)", track: index)
+        }
+
+        let verified = await MediaLibraryImportService.verifiedPlayable(library.tracks, provider: library)
+
+        XCTAssertEqual(verified.map(\.persistentID), library.tracks.map(\.persistentID))
     }
 }

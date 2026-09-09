@@ -275,3 +275,16 @@ final class FakeSpotifyPlayback: SpotifyPlaybackControlling {
         if let errorToThrow { throw errorToThrow }
     }
 }
+
+/// Stands in for the Spotify app on the device.
+@MainActor
+final class FakeSpotifyAppLink: SpotifyAppLinking {
+    var isInstalled: Bool
+    private(set) var openCount = 0
+
+    init(isInstalled: Bool = true) {
+        self.isInstalled = isInstalled
+    }
+
+    func open() { openCount += 1 }
+}

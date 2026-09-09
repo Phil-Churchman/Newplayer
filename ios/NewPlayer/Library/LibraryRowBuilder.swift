@@ -156,11 +156,9 @@ enum LibraryRowBuilder {
         if song.album?.persistentModelID != album.persistentModelID { song.album = album }
     }
 
-    /// Deletes what the sync no longer reports, and any surplus rows sharing an identity.
-    ///
-    /// Driven from every row fetched, not from the lookup tables. Those keep one row per key, so
-    /// duplicates left behind by earlier syncs were discarded when the table was built and the
-    /// deletion pass never saw them — they could not be removed by syncing at all.
+    /// Deletes what the sync no longer reports: songs first, then albums and artists that
+    /// nothing refers to any more. Emptiness is decided from what this sync saw rather than from
+    /// the relationship arrays, which aren't refreshed until the context is saved.
     @discardableResult
     private static func removeVanishedRows(
         existing: ExistingRows,
@@ -174,11 +172,7 @@ enum LibraryRowBuilder {
     ) async throws -> Int {
         var deleted = 0
 
-        for song in existing.allSongs {
-            let isStillWanted = seenSongs.contains(song.relativePath)
-            let isTheRowKept = keptSongsByPath[song.relativePath]?.persistentModelID == song.persistentModelID
-            guard !isStillWanted || !isTheRowKept else { continue }
-
+        for (path, song) in keptSongsByPath where !seenSongs.contains(path) {
             modelContext.delete(song)
             deleted += 1
             if deleted.isMultiple(of: saveBatchSize) {
@@ -186,24 +180,13 @@ enum LibraryRowBuilder {
                 await Task.yield()
             }
         }
-        try modelContext.save()
-
-        for album in existing.allAlbums {
-            let key = AlbumKey(name: album.name, artistName: album.artist?.name ?? "")
-            let isStillWanted = seenAlbums.contains(key)
-            let isTheRowKept = keptAlbumsByKey[key]?.persistentModelID == album.persistentModelID
-            if !isStillWanted || !isTheRowKept {
-                modelContext.delete(album)
-                deleted += 1
-            }
+        for (key, album) in keptAlbumsByKey where !seenAlbums.contains(key) {
+            modelContext.delete(album)
+            deleted += 1
         }
-        for artist in existing.allArtists {
-            let isStillWanted = seenArtists.contains(artist.name)
-            let isTheRowKept = keptArtistsByName[artist.name]?.persistentModelID == artist.persistentModelID
-            if !isStillWanted || !isTheRowKept {
-                modelContext.delete(artist)
-                deleted += 1
-            }
+        for (name, artist) in keptArtistsByName where !seenArtists.contains(name) {
+            modelContext.delete(artist)
+            deleted += 1
         }
         try modelContext.save()
         return deleted

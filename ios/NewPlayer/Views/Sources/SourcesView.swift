@@ -39,6 +39,7 @@ struct SourcesView: View {
     private var showSpotify: Bool { selectedKind == .spotify }
     @State private var spotifyClientIDInput = ""
     @State private var infoTopic: SourceInfoTopic?
+    @Environment(\.scenePhase) private var scenePhase
 
     private var localSource: Source? {
         sources.first { $0.kind == .local }
@@ -265,6 +266,14 @@ struct SourcesView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if viewModel.shouldOfferToOpenSpotify {
+                        // A device registers with Connect once it has a session, so the fix for
+                        // "this phone isn't listed" is to wake Spotify here once. The list is
+                        // re-read on returning, so it should then appear.
+                        Button("Open Spotify to Add This Phone") {
+                            viewModel.openSpotifyApp()
+                        }
+                    }
                     Button("Sign Out", role: .destructive) {
                         viewModel.signOutOfSpotify(source: spotifySource, allSources: sources, modelContext: modelContext)
                     }
@@ -310,6 +319,12 @@ struct SourcesView: View {
         .onAppear {
             viewModel.setSourcesScreenVisible(true)
             if let spotifySource { viewModel.loadSpotifyDevices(source: spotifySource) }
+        }
+        // Coming back from Spotify is exactly when a newly woken device appears, so the list is
+        // re-read rather than leaving the user to tap Refresh.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active, let spotifySource else { return }
+            viewModel.loadSpotifyDevices(source: spotifySource)
         }
         .onDisappear { viewModel.setSourcesScreenVisible(false) }
         .sheet(item: $infoTopic) { topic in

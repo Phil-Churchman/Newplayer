@@ -71,35 +71,15 @@ enum SpotifyImportService {
         }
     }
 
-    /// Removes duplicates, keeping the first occurrence and the original order.
+    /// Keeps the first occurrence of each track id, preserving order.
     ///
-    /// Matching on the track id alone isn't enough. Spotify relinks tracks per market, so the
-    /// same recording comes back with a different id from `/me/tracks` than from `/me/albums`,
-    /// and a saved album whose songs are also liked then imports twice over.
-    ///
-    /// The second pass therefore matches on what the track *is* — title, lead artist and album,
-    /// compared case- and accent-insensitively. Album is deliberately part of the key: the same
-    /// song on a single and on the album it later appeared on are different releases, and
-    /// collapsing those would quietly lose music rather than tidy it.
+    /// Deliberately id-only. Matching on title/artist/album as well was tried, to catch the same
+    /// recording arriving under two ids from Spotify's per-market relinking — but it changes
+    /// *which* id is stored for a track, and a relinked id is not always playable when handed
+    /// straight back in a play request. That showed up as Spotify refusing to open the link.
     static func deduplicated(_ tracks: [SpotifyTrack]) -> [SpotifyTrack] {
-        var seenIDs = Set<String>()
-        var seenTracks = Set<String>()
-        return tracks.filter { track in
-            guard seenIDs.insert(track.id).inserted else { return false }
-            return seenTracks.insert(identityKey(for: track)).inserted
-        }
-    }
-
-    /// A track's identity independent of which id Spotify happened to return for it.
-    private static func identityKey(for track: SpotifyTrack) -> String {
-        [track.title, track.artistNames.first ?? "", track.albumName]
-            .map(normalised)
-            .joined(separator: "\u{1F}")
-    }
-
-    private static func normalised(_ text: String) -> String {
-        text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var seen = Set<String>()
+        return tracks.filter { seen.insert($0.id).inserted }
     }
 
     /// Same album-wide rules as the Music library import: the album artist names the release,
@@ -114,7 +94,9 @@ enum SpotifyImportService {
         for (_, albumTracks) in grouped {
             let ordered = albumTracks.sorted { $0.trackNumber < $1.trackNumber }
             let albumName = ordered.first?.albumName.nilIfBlank ?? "Unknown Album"
-            let artist = artistName(for: ordered)
+            // Names the release: what the Artists screen groups by, and what identifies the
+            // album. Each row still carries its own performer below.
+            let releaseArtist = artistName(for: ordered)
             // One URL for the album, from its first track — every track in it shows the same
             // cover once that URL has been fetched.
             let coverURL = ordered.first?.albumArtworkURL?.absoluteString
@@ -122,9 +104,12 @@ enum SpotifyImportService {
             for (index, track) in ordered.enumerated() {
                 rows.append(RawSong(
                     title: track.title.nilIfBlank ?? "Unknown Title",
-                    artist: artist,
+                    // The track's own performer, which is what a track row should show. On a
+                    // compilation, or anything with guests, it is not the release artist — and
+                    // showing the release artist against every track hid exactly that difference.
+                    artist: track.artistNames.joined(separator: ", ").nilIfBlank ?? releaseArtist,
                     album: albumName,
-                    albumArtist: artist,
+                    albumArtist: releaseArtist,
                     track: track.trackNumber,
                     duration: track.durationSeconds,
                     relativePath: track.id,

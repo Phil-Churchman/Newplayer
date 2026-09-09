@@ -45,6 +45,7 @@ final class SourcesViewModel: ObservableObject {
     private let spotifyClient: SpotifyAPIClient
     private let spotifyTokens: SpotifyTokenStoring
     private let spotifySession: SpotifySession
+    private let spotifyAppLink: SpotifyAppLinking
     private let makeMPDClient: () -> MPDClientProtocol
     private let monitorIntervalNanoseconds: UInt64
     /// Whether the Sources screen is actually on screen. A TabView keeps every tab it has shown
@@ -59,7 +60,8 @@ final class SourcesViewModel: ObservableObject {
         mediaLibrary: MediaLibraryProviding? = nil,
         spotifyAuth: SpotifyAuthorizing? = nil,
         spotifyClient: SpotifyAPIClient = SpotifyWebAPIClient(),
-        spotifyTokens: SpotifyTokenStoring? = nil
+        spotifyTokens: SpotifyTokenStoring? = nil,
+        spotifyAppLink: SpotifyAppLinking? = nil
     ) {
         self.makeMPDClient = makeMPDClient
         self.monitorIntervalNanoseconds = monitorIntervalNanoseconds
@@ -69,6 +71,7 @@ final class SourcesViewModel: ObservableObject {
         self.spotifyTokens = spotifyTokens ?? SpotifyKeychainTokenStore()
         // The app-wide session unless a test supplied its own pieces, so this and PlaybackManager
         // share one token and one refresh rather than competing over the Keychain.
+        self.spotifyAppLink = spotifyAppLink ?? SpotifyAppLink()
         self.spotifySession = (spotifyAuth == nil && spotifyTokens == nil)
             ? .shared
             : SpotifySession(auth: self.spotifyAuth, tokens: self.spotifyTokens)
@@ -183,6 +186,22 @@ final class SourcesViewModel: ObservableObject {
         return "This is the list Spotify publishes for your account. The Spotify app also finds Bluetooth, AirPlay and speakers on your network directly, and those only appear here once you have played to them from Spotify at least once."
     }
 
+    /// Whether to offer to open Spotify, as the way to make this phone appear in the list.
+    ///
+    /// Only when it would actually help: Spotify installed, and no phone among the devices it
+    /// reports. Offering it when the phone is already there would be advice to do nothing.
+    var shouldOfferToOpenSpotify: Bool {
+        Self.shouldOfferToOpenSpotify(devices: spotifyDevices, isSpotifyInstalled: spotifyAppLink.isInstalled)
+    }
+
+    static func shouldOfferToOpenSpotify(devices: [SpotifyDevice], isSpotifyInstalled: Bool) -> Bool {
+        isSpotifyInstalled && !devices.contains(where: \.isPhone)
+    }
+
+    func openSpotifyApp() {
+        spotifyAppLink.open()
+    }
+
     /// Pins playback to one device, or back to automatic when nil. Remembered on the source so
     /// the choice survives relaunching.
     func selectSpotifyDevice(_ deviceID: String?, source: Source, modelContext: ModelContext) {
@@ -265,9 +284,15 @@ final class SourcesViewModel: ObservableObject {
 
     private static func summary(for result: MediaLibraryImportService.Result) -> String {
         let tracks = "\(result.imported) track\(result.imported == 1 ? "" : "s")"
-        guard result.skippedProtected > 0 else { return "Imported \(tracks)." }
-        let skipped = "\(result.skippedProtected) track\(result.skippedProtected == 1 ? " was" : "s were")"
-        return "Imported \(tracks). \(skipped) skipped — either not downloaded to this device, or Apple Music tracks that can only be played in the Music app."
+        var notes: [String] = []
+        if result.skippedProtected > 0 {
+            notes.append("\(result.skippedProtected) not downloaded to this device, or Apple Music tracks that can only be played in the Music app")
+        }
+        if result.skippedUnplayable > 0 {
+            notes.append("\(result.skippedUnplayable) that wouldn't open")
+        }
+        guard !notes.isEmpty else { return "Imported \(tracks)." }
+        return "Imported \(tracks). Skipped \(notes.joined(separator: ", and "))."
     }
 
     func setSourcesScreenVisible(_ visible: Bool) {

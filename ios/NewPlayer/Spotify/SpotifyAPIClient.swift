@@ -87,21 +87,12 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
 
     /// The session these requests run on.
     ///
-    /// Caching is switched off deliberately. Every one of these endpoints reports mutable state
-    /// — what is in your library, what is playing, which devices exist — and the default
-    /// configuration keeps a URL cache that will happily serve a stored copy of a GET. That is
-    /// what made a re-sync report the library exactly as it was: tracks removed in Spotify kept
-    /// coming back from the cache, and the merge preserved them because it was told they were
-    /// still there.
-    ///
-    /// Timeouts are explicit too: the default session waits a very long time, and a stuck
-    /// request part-way through paging a large library looks exactly like the app having hung.
+    /// Timeouts are explicit: the default session waits a very long time, and a stuck request
+    /// part-way through paging a large library looks exactly like the app having hung.
     static func makeConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 120
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.urlCache = nil
         return configuration
     }
 
@@ -157,8 +148,7 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
     // MARK: - Connect playback
 
     func fetchPlayerState(accessToken: String) async throws -> SpotifyPlayerState? {
-        var request = URLRequest(url: URL(string: "https://api.spotify.com/v1/me/player")!)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let request = Self.liveRequest(URL(string: "https://api.spotify.com/v1/me/player")!, accessToken: accessToken)
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -207,7 +197,8 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         }
         let response: DevicesResponse = try await get(
             URL(string: "https://api.spotify.com/v1/me/player/devices")!,
-            accessToken: accessToken
+            accessToken: accessToken,
+            isLiveState: true
         )
         return response.devices.compactMap { device in
             guard let id = device.id else { return nil }
@@ -250,7 +241,8 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         }
         let response: QueueResponse = try await get(
             URL(string: "https://api.spotify.com/v1/me/player/queue")!,
-            accessToken: accessToken
+            accessToken: accessToken,
+            isLiveState: true
         )
 
         // Spotify pads the queue from the playing context: with a short album it repeats those
@@ -324,10 +316,23 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         deviceID.map { "\(base)?device_id=\($0)" } ?? base
     }
 
-    private func send(_ method: String, path: String, body: Data?, accessToken: String) async throws {
-        var request = URLRequest(url: URL(string: "https://api.spotify.com/v1/\(path)")!)
-        request.httpMethod = method
+    /// The player endpoints report state that changes second to second — what is playing, which
+    /// devices exist. A cached answer to any of them is worse than no answer: it reports a world
+    /// that has moved on, and "no device available" while Spotify is plainly playing is exactly
+    /// what that looks like.
+    ///
+    /// Applied per request rather than to the whole session, so the library reads keep the
+    /// ordinary caching they had.
+    private static func liveRequest(_ url: URL, accessToken: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    private func send(_ method: String, path: String, body: Data?, accessToken: String) async throws {
+        var request = Self.liveRequest(URL(string: "https://api.spotify.com/v1/\(path)")!, accessToken: accessToken)
+        request.httpMethod = method
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -359,8 +364,14 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         }
     }
 
-    private func get<T: Decodable>(_ url: URL, accessToken: String, attempt: Int = 0) async throws -> T {
+    private func get<T: Decodable>(
+        _ url: URL,
+        accessToken: String,
+        attempt: Int = 0,
+        isLiveState: Bool = false
+    ) async throws -> T {
         var request = URLRequest(url: url)
+        if isLiveState { request.cachePolicy = .reloadIgnoringLocalCacheData }
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await session.data(for: request)
@@ -377,7 +388,7 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
                 throw SpotifyError.rateLimited(retryAfterSeconds: retryAfter)
             }
             try await Task.sleep(nanoseconds: UInt64(waitSeconds) * 1_000_000_000)
-            return try await get(url, accessToken: accessToken, attempt: attempt + 1)
+            return try await get(url, accessToken: accessToken, attempt: attempt + 1, isLiveState: isLiveState)
         }
         if http.statusCode == 401 {
             throw SpotifyError.permissionsMissing

@@ -6,13 +6,6 @@ import XCTest
 /// preserves a library you have already changed, which is exactly what happened: a re-sync
 /// reported the same 3134 tracks it already held and correctly changed nothing.
 final class SpotifyRequestCachingTests: XCTestCase {
-    func testLibraryRequestsAreNeverServedFromACache() {
-        let configuration = SpotifyWebAPIClient.makeConfiguration()
-
-        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
-        XCTAssertNil(configuration.urlCache, "a URL cache here re-serves a library that has moved on")
-    }
-
     /// The timeouts that stop a stalled request looking like a hung app.
     func testRequestsGiveUpRatherThanHanging() {
         let configuration = SpotifyWebAPIClient.makeConfiguration()

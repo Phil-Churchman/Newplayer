@@ -71,13 +71,6 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
         let window = Self.window(of: trackIDs, around: index)
         let uris = window.ids.map { "spotify:track:\($0)" }
 
-        // A malformed or unplayable URI is refused by Spotify with a message about links, which
-        // gives no clue which track was at fault. Logged so the next report can say.
-        if let malformed = uris.first(where: { !Self.isPlausibleTrackURI($0) }) {
-            print("SpotifyPlaybackController: refusing to send a malformed URI — \(malformed)")
-            throw SpotifyError.actionNotAllowed("a track in this album has no Spotify id")
-        }
-
         do {
             try await command { token, device in
                 try await self.client.play(
@@ -145,7 +138,22 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
     /// which is this one, in the usual case of the app running alongside Spotify.
     private func chooseDevice() async throws -> SpotifyDevice {
         let devices = try await client.fetchDevices(accessToken: try await token())
-        guard !devices.isEmpty else { throw SpotifyError.noActiveDevice }
+
+        guard !devices.isEmpty else {
+            // The device list can come back empty while Spotify is plainly playing — it lists
+            // what the backend has registered, which lags what is actually happening. When that
+            // happens, ask what is playing *now*: if there is a device behind it, that is the
+            // one to talk to, whatever the list says.
+            if let state = try? await client.fetchPlayerState(accessToken: try await token()),
+               let activeID = state.activeDeviceID {
+                print("SpotifyPlaybackController: device list was empty; using the device reported as playing")
+                return SpotifyDevice(
+                    id: activeID, name: "Current device", isActive: true,
+                    isRestricted: false, type: ""
+                )
+            }
+            throw SpotifyError.noActiveDevice
+        }
 
         let controllable = devices.filter { !$0.isRestricted }
         guard !controllable.isEmpty else { throw SpotifyError.onlyRestrictedDevices }
@@ -175,15 +183,6 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
         _ body: (String) async throws -> Void
     ) async throws {
         try await body(try await token())
-    }
-
-    /// A Spotify track id is 22 characters of base62. Anything else — an empty string, a file
-    /// path, a Music-library persistent id — will be refused, and it is worth catching here
-    /// rather than as an opaque complaint about links.
-    static func isPlausibleTrackURI(_ uri: String) -> Bool {
-        let id = uri.replacingOccurrences(of: "spotify:track:", with: "")
-        guard id.count == 22 else { return false }
-        return id.allSatisfy { $0.isLetter || $0.isNumber }
     }
 
     /// The slice to send, and where the chosen track sits within it.

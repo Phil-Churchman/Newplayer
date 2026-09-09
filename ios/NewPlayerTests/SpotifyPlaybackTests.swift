@@ -804,8 +804,9 @@ final class SpotifyPlaybackTests: XCTestCase {
 
     /// A refusal that isn't about permissions must not tell the user to sign in again.
     func testARefusedActionIsNotReportedAsASignInProblem() {
+        // Attributed to Spotify, because it is Spotify's own wording relayed word for word.
         let message = SpotifyError.actionNotAllowed("Cannot skip to previous track").errorDescription ?? ""
-        XCTAssertEqual(message, "Cannot skip to previous track")
+        XCTAssertEqual(message, "Spotify: Cannot skip to previous track")
         XCTAssertFalse(message.lowercased().contains("sign in"))
     }
 
@@ -829,26 +830,6 @@ final class SpotifyPlaybackTests: XCTestCase {
         await waitUntil(timeout: 6) { remote.commands.contains("previous") }
 
         XCTAssertFalse(remote.commands.contains("seek"), "no need to restart when the skip worked")
-    }
-
-    // MARK: - What gets sent as a Spotify URI
-
-    /// Spotify refuses a malformed URI with a message about links, which names no track and
-    /// reads as though this app produced it. Catching it here says which album is at fault.
-    func testARealSpotifyIDIsAccepted() {
-        XCTAssertTrue(SpotifyPlaybackController.isPlausibleTrackURI("spotify:track:4iV5W9uYEdYUVa79Axb7Rh"))
-    }
-
-    func testAFilePathIsNotASpotifyID() {
-        XCTAssertFalse(SpotifyPlaybackController.isPlausibleTrackURI("spotify:track:music/track-1.flac"))
-    }
-
-    func testAMusicLibraryPersistentIDIsNotASpotifyID() {
-        XCTAssertFalse(SpotifyPlaybackController.isPlausibleTrackURI("spotify:track:998877665544332211"))
-    }
-
-    func testAnEmptyIDIsRejected() {
-        XCTAssertFalse(SpotifyPlaybackController.isPlausibleTrackURI("spotify:track:"))
     }
 
     /// Spotify's own wording is relayed, but attributed — unattributed it reads as this app's.

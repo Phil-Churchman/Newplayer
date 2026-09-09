@@ -181,4 +181,58 @@ final class SpotifyDeviceTests: XCTestCase {
         XCTAssertTrue(client.commands.contains("fetchDevices"), "with no choice it should look devices up again")
         XCTAssertEqual(client.deviceIDsUsed.last, "phone-1")
     }
+
+    // MARK: - When the device list disagrees with reality
+
+    /// The reported bug: "Spotify has no device to play on" while Spotify was open and playing.
+    /// The device list reports what Spotify's backend has registered, which can lag what is
+    /// actually happening — so when it comes back empty, what is playing is asked instead.
+    func testAnEmptyDeviceListFallsBackToTheDevicePlayingNow() async throws {
+        let client = FakeSpotifyClient()
+        client.requiresNamedDevice = true
+        client.devices = [] // backend lists nothing…
+        client.playerState = SpotifyPlayerState(
+            isPlaying: true, progressSeconds: 12, durationSeconds: 200,
+            trackID: "t1", activeDeviceID: "phone-1" // …but something is plainly playing
+        )
+
+        let controller = makeController(client: client)
+        try await controller.resume()
+
+        XCTAssertEqual(client.deviceIDsUsed.last, "phone-1", "it should talk to whatever is playing")
+    }
+
+    /// With nothing listed and nothing playing, the refusal stands — there genuinely is nowhere
+    /// to send the command.
+    func testAnEmptyListAndNothingPlayingStillRefuses() async throws {
+        let client = FakeSpotifyClient()
+        client.requiresNamedDevice = true
+        client.devices = []
+        client.playerState = nil
+
+        let controller = makeController(client: client)
+
+        do {
+            try await controller.resume()
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertEqual(error as? SpotifyError, .noActiveDevice)
+        }
+    }
+
+    /// A listed device is still preferred: the fallback is for when the list fails us.
+    func testAListedDeviceIsPreferredOverTheFallback() async throws {
+        let client = FakeSpotifyClient()
+        client.requiresNamedDevice = true
+        client.devices = [device("listed", active: true)]
+        client.playerState = SpotifyPlayerState(
+            isPlaying: true, progressSeconds: 0, durationSeconds: 200,
+            trackID: "t1", activeDeviceID: "reported"
+        )
+
+        let controller = makeController(client: client)
+        try await controller.resume()
+
+        XCTAssertEqual(client.deviceIDsUsed.last, "listed")
+    }
 }

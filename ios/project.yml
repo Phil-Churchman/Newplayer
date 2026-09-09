@@ -39,6 +39,9 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: com.example.newplayer.spotify
             CFBundleURLSchemes: [newplayer]
+        # Needed for canOpenURL("spotify:") — without it iOS reports Spotify as not installed
+        # however present it is, and the offer to open it would never appear.
+        LSApplicationQueriesSchemes: [spotify]
         NSAppleMusicUsageDescription: New player reads your Music library so you can browse and play the songs already on this device.
     settings:
       base:

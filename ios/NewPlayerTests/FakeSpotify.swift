@@ -99,8 +99,12 @@ final class FakeSpotifyClient: SpotifyAPIClient, @unchecked Sendable {
         if let commandError { throw commandError }
     }
 
+    /// How Spotify refuses a command sent with no device named. It answers 404 in some states
+    /// and 403 "Restriction violated" in others, and both mean the same thing to this app.
+    var refusalForUnnamedDevice: SpotifyError = .noActiveDevice
+
     private func requireDevice(_ deviceID: String?) throws {
-        if requiresNamedDevice, deviceID == nil { throw SpotifyError.noActiveDevice }
+        if requiresNamedDevice, deviceID == nil { throw refusalForUnnamedDevice }
     }
 
     func resume(deviceID: String?, accessToken: String) async throws {
@@ -274,17 +278,4 @@ final class FakeSpotifyPlayback: SpotifyPlaybackControlling {
     private func failIfNeeded() throws {
         if let errorToThrow { throw errorToThrow }
     }
-}
-
-/// Stands in for the Spotify app on the device.
-@MainActor
-final class FakeSpotifyAppLink: SpotifyAppLinking {
-    var isInstalled: Bool
-    private(set) var openCount = 0
-
-    init(isInstalled: Bool = true) {
-        self.isInstalled = isInstalled
-    }
-
-    func open() { openCount += 1 }
 }

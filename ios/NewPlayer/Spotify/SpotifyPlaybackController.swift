@@ -128,10 +128,25 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
         do {
             try await withRetryOnRefusedPermissions { try await body($0, self.deviceID) }
         } catch SpotifyError.noActiveDevice {
-            let device = try await chooseDevice()
-            discoveredDeviceID = device.id
-            try await withRetryOnRefusedPermissions { try await body($0, device.id) }
+            try await retryNamingADevice(body)
+        } catch SpotifyError.actionNotAllowed(let reason) {
+            // "Restriction violated" is Spotify's answer to a command it considers out of
+            // context, and a command sent with no device named is out of context whenever the
+            // backend has nothing active — the same situation as the 404 above, reported
+            // differently. Naming a device is usually all it wants.
+            //
+            // Only worth retrying if we hadn't named one. If we had, the refusal is about the
+            // command itself and stands.
+            guard deviceID == nil else { throw SpotifyError.actionNotAllowed(reason) }
+            print("SpotifyPlaybackController: refused (\(reason ?? "no reason")); retrying with a named device")
+            try await retryNamingADevice(body)
         }
+    }
+
+    private func retryNamingADevice(_ body: @escaping (String, String?) async throws -> Void) async throws {
+        let device = try await chooseDevice()
+        discoveredDeviceID = device.id
+        try await withRetryOnRefusedPermissions { try await body($0, device.id) }
     }
 
     /// Prefers a device already playing, then any Spotify will let us drive, favouring a phone —

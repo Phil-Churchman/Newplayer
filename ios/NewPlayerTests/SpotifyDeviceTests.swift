@@ -235,4 +235,42 @@ final class SpotifyDeviceTests: XCTestCase {
 
         XCTAssertEqual(client.deviceIDsUsed.last, "listed")
     }
+
+    // MARK: - "Restriction violated"
+
+    /// The reported failure. Spotify refuses a command sent with no device named whenever the
+    /// backend has nothing active — sometimes as 404, sometimes as 403 "Restriction violated".
+    /// Only the first was recovered from, so the second surfaced as an error and playback simply
+    /// did not start.
+    func testACommandRefusedAsRestrictedIsRetriedWithANamedDevice() async throws {
+        let client = FakeSpotifyClient()
+        client.requiresNamedDevice = true
+        client.refusalForUnnamedDevice = .actionNotAllowed("Player command failed: Restriction violated")
+        client.devices = [device("phone-1")]
+
+        let controller = makeController(client: client)
+        try await controller.play(trackIDs: ["t1"], startAt: 0)
+
+        XCTAssertEqual(client.deviceIDsUsed.last, "phone-1", "the retry should name a device")
+        XCTAssertEqual(client.commands.filter { $0 == "play" }.count, 2, "refused once, then retried")
+    }
+
+    /// A refusal of a command that *did* name a device is about the command, not the device, so
+    /// it stands rather than looping.
+    func testARefusalWithADeviceAlreadyNamedIsNotRetried() async throws {
+        let client = FakeSpotifyClient()
+        client.devices = [device("phone-1")]
+        client.commandError = SpotifyError.actionNotAllowed("Player command failed: Restriction violated")
+
+        let controller = makeController(client: client)
+        controller.selectDevice(id: "phone-1")
+
+        do {
+            try await controller.resume()
+            XCTFail("expected the refusal to stand")
+        } catch {
+            XCTAssertEqual(error as? SpotifyError, .actionNotAllowed("Player command failed: Restriction violated"))
+        }
+        XCTAssertEqual(client.commands.filter { $0 == "resume" }.count, 1, "it must not loop")
+    }
 }

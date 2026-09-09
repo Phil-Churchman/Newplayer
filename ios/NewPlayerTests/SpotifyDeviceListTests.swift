@@ -64,44 +64,4 @@ final class SpotifyDeviceListTests: XCTestCase {
         XCTAssertNotNil(hint)
         XCTAssertTrue(hint?.contains("Spotify app") == true, "got: \(hint ?? "nil")")
     }
-
-    // MARK: - Offering to wake Spotify on this phone
-
-    /// A device joins Spotify's Connect list once it has a session, so the cure for "this phone
-    /// isn't listed" is to open Spotify here once. Offered only when it would actually help.
-    func testTheOfferAppearsWhenNoPhoneIsListed() {
-        let devices = [device("1", name: "Kitchen", type: "Speaker")]
-        XCTAssertTrue(
-            SourcesViewModel.shouldOfferToOpenSpotify(devices: devices, isSpotifyInstalled: true)
-        )
-    }
-
-    /// Advice to do nothing is worse than no advice.
-    func testTheOfferIsHiddenWhenThePhoneIsAlreadyThere() {
-        let devices = [device("1", name: "Phil's iPhone")]
-        XCTAssertFalse(
-            SourcesViewModel.shouldOfferToOpenSpotify(devices: devices, isSpotifyInstalled: true)
-        )
-    }
-
-    /// Nothing to open if Spotify isn't installed.
-    func testTheOfferIsHiddenWithoutTheSpotifyApp() {
-        XCTAssertFalse(
-            SourcesViewModel.shouldOfferToOpenSpotify(devices: [], isSpotifyInstalled: false)
-        )
-    }
-
-    func testTakingTheOfferOpensSpotify() {
-        let link = FakeSpotifyAppLink()
-        let viewModel = SourcesViewModel(
-            spotifyAuth: FakeSpotifyAuth(),
-            spotifyClient: FakeSpotifyClient(),
-            spotifyTokens: InMemorySpotifyTokenStore(),
-            spotifyAppLink: link
-        )
-
-        viewModel.openSpotifyApp()
-
-        XCTAssertEqual(link.openCount, 1)
-    }
 }

@@ -16,15 +16,9 @@ enum MediaLibraryImportError: Error, Equatable {
 enum MediaLibraryImportService {
     struct Result: Equatable {
         var imported: Int
-        /// Tracks the library's own metadata rules out: DRM-protected, or not downloaded.
+        /// Tracks this app can't play: DRM-protected, or not downloaded to the device.
         var skippedProtected: Int
-        /// Tracks that looked fine but wouldn't actually open when asked.
-        var skippedUnplayable: Int
     }
-
-    /// How many assets to check at once. Bounded: each is a small piece of I/O, and thousands at
-    /// once would swamp the system for no gain.
-    private static let verificationConcurrency = 8
 
     @discardableResult
     static func rescan(
@@ -51,19 +45,9 @@ enum MediaLibraryImportService {
         try? modelContext.save()
 
         let tracks = provider.fetchTracks()
-        let plausible = tracks.filter(\.isPlayableLocally)
-        let skipped = tracks.count - plausible.count
-
-        // Confirmed during the scan rather than discovered on a tap. The metadata checks above
-        // are answered from the library's own records; this asks whether the asset opens.
-        let playable = await verifiedPlayable(plausible, provider: provider) { checked in
-            onProgress(checked, plausible.count)
-        }
-        let unplayable = plausible.count - playable.count
-        print("""
-        MediaLibraryImportService: \(playable.count) playable, \(skipped) skipped as DRM-protected \
-        or not downloaded, \(unplayable) skipped as unopenable
-        """)
+        let playable = tracks.filter(\.isPlayableLocally)
+        let skipped = tracks.count - playable.count
+        print("MediaLibraryImportService: \(playable.count) playable track(s), \(skipped) skipped as DRM-protected or not downloaded")
 
         let rawSongs = makeRawSongs(from: playable, artworkForTrack: provider.artworkData(forPersistentID:))
 
@@ -82,46 +66,11 @@ enum MediaLibraryImportService {
         source.lastSyncDate = .now
         try? modelContext.save()
 
-        return Result(imported: rawSongs.count, skippedProtected: skipped, skippedUnplayable: unplayable)
+        return Result(imported: rawSongs.count, skippedProtected: skipped)
     }
 }
 
 extension MediaLibraryImportService {
-    /// Keeps only the tracks whose assets actually open, checking a bounded number at a time.
-    static func verifiedPlayable(
-        _ tracks: [MediaLibraryTrack],
-        provider: MediaLibraryProviding,
-        onProgress: (Int) -> Void = { _ in }
-    ) async -> [MediaLibraryTrack] {
-        var kept: [MediaLibraryTrack] = []
-        kept.reserveCapacity(tracks.count)
-        var checked = 0
-
-        var index = 0
-        while index < tracks.count {
-            let slice = Array(tracks[index..<min(index + verificationConcurrency, tracks.count)])
-            let results = await withTaskGroup(of: (MediaLibraryTrack, Bool).self) { group in
-                for track in slice {
-                    group.addTask { (track, await provider.isPlayable(persistentID: track.persistentID)) }
-                }
-                var outcomes: [(MediaLibraryTrack, Bool)] = []
-                for await outcome in group { outcomes.append(outcome) }
-                return outcomes
-            }
-
-            // Restored to the original order: the group finishes in whatever order it likes, and
-            // track order decides which cover an album takes.
-            let playableIDs = Set(results.filter(\.1).map { $0.0.persistentID })
-            kept.append(contentsOf: slice.filter { playableIDs.contains($0.persistentID) })
-
-            checked += slice.count
-            onProgress(checked)
-            index += verificationConcurrency
-        }
-        return kept
-    }
-
-
     /// Builds the rows for a whole library, album by album.
     ///
     /// Three rules specific to this source, all of which need the album seen as a whole rather

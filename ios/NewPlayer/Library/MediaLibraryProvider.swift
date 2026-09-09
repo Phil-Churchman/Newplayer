@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 import MediaPlayer
 
@@ -45,13 +44,6 @@ protocol MediaLibraryProviding {
     func artworkData(forPersistentID persistentID: String) -> Data?
     /// Resolved at playback time — see `MediaLibraryTrack.persistentID`.
     func assetURL(forPersistentID persistentID: String) -> URL?
-    /// Whether the asset actually opens.
-    ///
-    /// `assetURL != nil` and `hasProtectedAsset == false` are Apple's own signals and cost
-    /// nothing, but they are answered from the library's metadata rather than from the file.
-    /// This asks AVFoundation to look, which catches the cases metadata can't: an encoding it
-    /// won't decode, or a download the system has since evicted.
-    func isPlayable(persistentID: String) async -> Bool
 }
 
 /// The real thing, over MediaPlayer's MPMediaLibrary.
@@ -156,9 +148,4 @@ final class SystemMediaLibrary: MediaLibraryProviding {
         item(withPersistentID: persistentID)?.assetURL
     }
 
-    func isPlayable(persistentID: String) async -> Bool {
-        guard let url = assetURL(forPersistentID: persistentID) else { return false }
-        let asset = AVURLAsset(url: url)
-        return (try? await asset.load(.isPlayable)) ?? false
-    }
 }

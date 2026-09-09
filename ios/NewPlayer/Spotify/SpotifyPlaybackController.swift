@@ -128,25 +128,10 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
         do {
             try await withRetryOnRefusedPermissions { try await body($0, self.deviceID) }
         } catch SpotifyError.noActiveDevice {
-            try await retryNamingADevice(body)
-        } catch SpotifyError.actionNotAllowed(let reason) {
-            // "Restriction violated" is Spotify's answer to a command it considers out of
-            // context, and a command sent with no device named is out of context whenever the
-            // backend has nothing active — the same situation as the 404 above, reported
-            // differently. Naming a device is usually all it wants.
-            //
-            // Only worth retrying if we hadn't named one. If we had, the refusal is about the
-            // command itself and stands.
-            guard deviceID == nil else { throw SpotifyError.actionNotAllowed(reason) }
-            print("SpotifyPlaybackController: refused (\(reason ?? "no reason")); retrying with a named device")
-            try await retryNamingADevice(body)
+            let device = try await chooseDevice()
+            discoveredDeviceID = device.id
+            try await withRetryOnRefusedPermissions { try await body($0, device.id) }
         }
-    }
-
-    private func retryNamingADevice(_ body: @escaping (String, String?) async throws -> Void) async throws {
-        let device = try await chooseDevice()
-        discoveredDeviceID = device.id
-        try await withRetryOnRefusedPermissions { try await body($0, device.id) }
     }
 
     /// Prefers a device already playing, then any Spotify will let us drive, favouring a phone —
@@ -154,21 +139,7 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
     private func chooseDevice() async throws -> SpotifyDevice {
         let devices = try await client.fetchDevices(accessToken: try await token())
 
-        guard !devices.isEmpty else {
-            // The device list can come back empty while Spotify is plainly playing — it lists
-            // what the backend has registered, which lags what is actually happening. When that
-            // happens, ask what is playing *now*: if there is a device behind it, that is the
-            // one to talk to, whatever the list says.
-            if let state = try? await client.fetchPlayerState(accessToken: try await token()),
-               let activeID = state.activeDeviceID {
-                print("SpotifyPlaybackController: device list was empty; using the device reported as playing")
-                return SpotifyDevice(
-                    id: activeID, name: "Current device", isActive: true,
-                    isRestricted: false, type: ""
-                )
-            }
-            throw SpotifyError.noActiveDevice
-        }
+        guard !devices.isEmpty else { throw SpotifyError.noActiveDevice }
 
         let controllable = devices.filter { !$0.isRestricted }
         guard !controllable.isEmpty else { throw SpotifyError.onlyRestrictedDevices }

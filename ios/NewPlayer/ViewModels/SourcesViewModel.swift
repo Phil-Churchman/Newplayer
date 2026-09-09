@@ -265,15 +265,9 @@ final class SourcesViewModel: ObservableObject {
 
     private static func summary(for result: MediaLibraryImportService.Result) -> String {
         let tracks = "\(result.imported) track\(result.imported == 1 ? "" : "s")"
-        var notes: [String] = []
-        if result.skippedProtected > 0 {
-            notes.append("\(result.skippedProtected) not downloaded to this device, or Apple Music tracks that can only be played in the Music app")
-        }
-        if result.skippedUnplayable > 0 {
-            notes.append("\(result.skippedUnplayable) that wouldn't open")
-        }
-        guard !notes.isEmpty else { return "Imported \(tracks)." }
-        return "Imported \(tracks). Skipped \(notes.joined(separator: ", and "))."
+        guard result.skippedProtected > 0 else { return "Imported \(tracks)." }
+        let skipped = "\(result.skippedProtected) track\(result.skippedProtected == 1 ? " was" : "s were")"
+        return "Imported \(tracks). \(skipped) skipped — either not downloaded to this device, or Apple Music tracks that can only be played in the Music app."
     }
 
     func setSourcesScreenVisible(_ visible: Bool) {

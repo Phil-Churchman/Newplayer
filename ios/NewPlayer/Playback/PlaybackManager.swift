@@ -1268,7 +1268,9 @@ final class PlaybackManager {
         // instead, if this is ever reached for one anyway.
         guard !isRemoteSong(song) else {
             print("PlaybackManager: loadCurrentItem called for a network-sourced song (\(song.title)) — refusing to hand it to AVPlayer")
-            failToLoad(song, reason: "\(song.title) belongs to a server, not this device.")
+            player.replaceCurrentItem(with: nil)
+            duration = 0
+            isPlaying = false
             return
         }
 
@@ -1296,11 +1298,10 @@ final class PlaybackManager {
         // security scope to start or release.
         if source.kind == .mediaLibrary {
             guard let assetURL = mediaLibrary.assetURL(forPersistentID: song.relativePath) else {
-                // The import only takes tracks with a local, unprotected asset, so reaching here
-                // means one has gone since — removed from the Music app, or its download
-                // evicted. Said out loud rather than logged: a track that does nothing when
-                // tapped, with no explanation, is indistinguishable from the app being broken.
-                failToLoad(song, reason: "\(song.title) isn't on this device any more. Re-download it in the Music app, then sync this source again.")
+                print("PlaybackManager: \(song.title) is no longer in the Music library")
+                player.replaceCurrentItem(with: nil)
+                duration = 0
+                isPlaying = false
                 return
             }
             startPlaying(url: assetURL, song: song, autoplay: autoplay)
@@ -1308,7 +1309,10 @@ final class PlaybackManager {
         }
 
         guard let root = try? FolderBookmarkStore.resolveURL(for: source) else {
-            failToLoad(song, reason: "Can't reach the music folder any more. Choose it again in Sources.")
+            print("PlaybackManager: could not resolve a bookmarked folder for \(song.title)")
+            player.replaceCurrentItem(with: nil)
+            duration = 0
+            isPlaying = false
             return
         }
 
@@ -1316,29 +1320,25 @@ final class PlaybackManager {
         // resolution (the folder root) — that's the object the OS actually tracks the grant
         // against — then held for as long as we're reading any file under it.
         guard root.startAccessingSecurityScopedResource() else {
-            failToLoad(song, reason: "Permission to read the music folder was lost. Choose it again in Sources.")
+            print("PlaybackManager: startAccessingSecurityScopedResource failed for \(root.path)")
+            player.replaceCurrentItem(with: nil)
+            duration = 0
+            isPlaying = false
             return
         }
         currentlyScopedURL = root
 
         let fileURL = root.appendingPathComponent(song.relativePath)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            print("PlaybackManager: file missing at \(fileURL.path) — folder contents may have changed since the last sync")
             releaseCurrentScope()
-            failToLoad(song, reason: "\(song.title) is no longer in the music folder. Rescan the source in Sources.")
+            player.replaceCurrentItem(with: nil)
+            duration = 0
+            isPlaying = false
             return
         }
 
         startPlaying(url: fileURL, song: song, autoplay: autoplay)
-    }
-
-    /// Gives up on a track and says why, rather than leaving a tap that appears to do nothing.
-    private func failToLoad(_ song: Song, reason: String) {
-        print("PlaybackManager: can't play \(song.title) — \(reason)")
-        playbackErrorMessage = reason
-        player.replaceCurrentItem(with: nil)
-        duration = 0
-        isPlaying = false
-        updateNowPlayingPlaybackState()
     }
 
     /// Hands a resolved URL to AVPlayer. Shared by the folder and Music-library paths, which
@@ -1357,12 +1357,7 @@ final class PlaybackManager {
                         self?.duration = seconds
                     }
                 case .failed:
-                    // The asset existed but wouldn't open — an unsupported encoding, or a file
-                    // that turned out to be unreadable. Reported for the same reason.
-                    let detail = observedItem.error?.localizedDescription ?? "it couldn't be opened"
-                    print("PlaybackManager: AVPlayerItem failed for \(url.lastPathComponent) — \(detail)")
-                    self?.playbackErrorMessage = "Couldn't play \(song.title): \(detail)"
-                    self?.isPlaying = false
+                    print("PlaybackManager: AVPlayerItem failed for \(url.lastPathComponent) — \(observedItem.error?.localizedDescription ?? "unknown error")")
                 default:
                     break
                 }
@@ -1370,7 +1365,6 @@ final class PlaybackManager {
         }
 
         updateNowPlayingInfo()
-        playbackErrorMessage = nil
 
         if autoplay {
             resume()

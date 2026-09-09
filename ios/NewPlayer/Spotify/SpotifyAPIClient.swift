@@ -148,7 +148,8 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
     // MARK: - Connect playback
 
     func fetchPlayerState(accessToken: String) async throws -> SpotifyPlayerState? {
-        let request = Self.liveRequest(URL(string: "https://api.spotify.com/v1/me/player")!, accessToken: accessToken)
+        var request = URLRequest(url: URL(string: "https://api.spotify.com/v1/me/player")!)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -197,8 +198,7 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         }
         let response: DevicesResponse = try await get(
             URL(string: "https://api.spotify.com/v1/me/player/devices")!,
-            accessToken: accessToken,
-            isLiveState: true
+            accessToken: accessToken
         )
         return response.devices.compactMap { device in
             guard let id = device.id else { return nil }
@@ -241,8 +241,7 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         }
         let response: QueueResponse = try await get(
             URL(string: "https://api.spotify.com/v1/me/player/queue")!,
-            accessToken: accessToken,
-            isLiveState: true
+            accessToken: accessToken
         )
 
         // Spotify pads the queue from the playing context: with a short album it repeats those
@@ -316,23 +315,10 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         deviceID.map { "\(base)?device_id=\($0)" } ?? base
     }
 
-    /// The player endpoints report state that changes second to second — what is playing, which
-    /// devices exist. A cached answer to any of them is worse than no answer: it reports a world
-    /// that has moved on, and "no device available" while Spotify is plainly playing is exactly
-    /// what that looks like.
-    ///
-    /// Applied per request rather than to the whole session, so the library reads keep the
-    /// ordinary caching they had.
-    private static func liveRequest(_ url: URL, accessToken: String) -> URLRequest {
-        var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        return request
-    }
-
     private func send(_ method: String, path: String, body: Data?, accessToken: String) async throws {
-        var request = Self.liveRequest(URL(string: "https://api.spotify.com/v1/\(path)")!, accessToken: accessToken)
+        var request = URLRequest(url: URL(string: "https://api.spotify.com/v1/\(path)")!)
         request.httpMethod = method
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -364,14 +350,8 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         }
     }
 
-    private func get<T: Decodable>(
-        _ url: URL,
-        accessToken: String,
-        attempt: Int = 0,
-        isLiveState: Bool = false
-    ) async throws -> T {
+    private func get<T: Decodable>(_ url: URL, accessToken: String, attempt: Int = 0) async throws -> T {
         var request = URLRequest(url: url)
-        if isLiveState { request.cachePolicy = .reloadIgnoringLocalCacheData }
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await session.data(for: request)
@@ -388,7 +368,7 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
                 throw SpotifyError.rateLimited(retryAfterSeconds: retryAfter)
             }
             try await Task.sleep(nanoseconds: UInt64(waitSeconds) * 1_000_000_000)
-            return try await get(url, accessToken: accessToken, attempt: attempt + 1, isLiveState: isLiveState)
+            return try await get(url, accessToken: accessToken, attempt: attempt + 1)
         }
         if http.statusCode == 401 {
             throw SpotifyError.permissionsMissing

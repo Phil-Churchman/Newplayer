@@ -28,7 +28,7 @@ final class MediaLibraryPlaybackTests: XCTestCase {
 
     /// A track deleted from the Music library since the import must fail quietly rather than
     /// handing AVPlayer a bogus path (which produces only a bare "fopen failed" in the log).
-    func testATrackNoLongerInTheLibraryIsNotHandedToThePlayer() throws {
+    func testATrackNoLongerInTheLibraryIsNotHandedToThePlayer() {
         let source = Source(name: "Music Library", isActive: true, kind: .mediaLibrary)
         let library = FakeMediaLibrary() // knows about no tracks
 
@@ -37,11 +37,6 @@ final class MediaLibraryPlaybackTests: XCTestCase {
 
         XCTAssertNil(manager.player.currentItem)
         XCTAssertFalse(manager.isPlaying)
-        // Said out loud. A tap that does nothing, with no explanation, is indistinguishable from
-        // the app being broken — and it is the reason "are these tracks playable?" could not be
-        // answered from using the app.
-        let message = try XCTUnwrap(manager.playbackErrorMessage)
-        XCTAssertTrue(message.contains("isn't on this device"), "got: \(message)")
     }
 
     /// Transport control still routes locally, not through MPD.
@@ -59,19 +54,5 @@ final class MediaLibraryPlaybackTests: XCTestCase {
 
         let calls = await mock.calls
         XCTAssertTrue(calls.isEmpty, "a device-library song must never be sent to an MPD server")
-    }
-
-    /// A track that does load clears any complaint left by the last one.
-    func testPlayingSuccessfullyClearsAPreviousFailure() {
-        let source = Source(name: "Music Library", isActive: true, kind: .mediaLibrary)
-        let library = FakeMediaLibrary()
-        library.assetURLs["good"] = URL(string: "ipod-library://item/item.m4a?id=good")!
-
-        let manager = PlaybackManager(mediaLibrary: library)
-        manager.play(songs: [makeSong(id: "gone", source: source)], startAt: 0)
-        XCTAssertNotNil(manager.playbackErrorMessage)
-
-        manager.play(songs: [makeSong(id: "good", source: source)], startAt: 0)
-        XCTAssertNil(manager.playbackErrorMessage)
     }
 }

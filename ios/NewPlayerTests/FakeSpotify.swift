@@ -76,9 +76,20 @@ final class FakeSpotifyClient: SpotifyAPIClient, @unchecked Sendable {
         lock.lock(); commands.removeAll(); deviceIDsUsed.removeAll(); lock.unlock()
     }
 
+    /// Track URIs handed to the queue endpoint, in order.
+    private(set) var queuedURIs: [String] = []
+
+    func addToQueue(trackURI: String, deviceID: String?, accessToken: String) async throws {
+        lock.lock(); queuedURIs.append(trackURI); commands.append("addToQueue"); deviceIDsUsed.append(deviceID); lock.unlock()
+        try requireDevice(deviceID)
+        if let commandError { throw commandError }
+    }
+
     func transferPlayback(toDeviceID deviceID: String, play: Bool, accessToken: String) async throws {
         lock.lock(); commands.append("transfer:\(deviceID):\(play)"); lock.unlock()
         if let commandError { throw commandError }
+        // A transfer is the thing that actually claims a device.
+        activeDeviceID = deviceID
     }
 
     var queueSnapshot = SpotifyQueueSnapshot(currentTrackID: nil, entries: [])
@@ -98,13 +109,43 @@ final class FakeSpotifyClient: SpotifyAPIClient, @unchecked Sendable {
         try requireDevice(deviceID)
         if let commandError { throw commandError }
     }
-
     /// How Spotify refuses a command sent with no device named. It answers 404 in some states
     /// and 403 "Restriction violated" in others, and both mean the same thing to this app.
     var refusalForUnnamedDevice: SpotifyError = .noActiveDevice
 
+    /// Whether naming a device that isn't in `devices` is refused, as Spotify refuses it with a
+    /// 404 "Device not found".
+    ///
+    /// This matters more than it looks. While the only refusal modelled here was "no device
+    /// named", any non-nil id — including one for a device that had long since gone — was
+    /// accepted, so a bug that pinned commands to a dead device could not be written down as a
+    /// failing test. Device ids are per-session on real Spotify, so going stale is the normal
+    /// case, not an exotic one.
+    var rejectsUnknownDeviceIDs = true
+
+    /// Which device is currently in charge. A transfer moves it; naming a device in a play
+    /// request does not.
+    var activeDeviceID: String?
+
+    /// Whether a command aimed at a device that isn't in charge is refused with "Restriction
+    /// violated", as Spotify refuses it.
+    ///
+    /// Naming a device in `/me/player/play` reads as though it claims that device. It does not:
+    /// with Spotify paused on a speaker, asking it to play on the phone comes back 403. Only a
+    /// transfer claims a device, and until this was modelled here no test could say so.
+    var refusesCommandsToInactiveDevices = false
+
     private func requireDevice(_ deviceID: String?) throws {
-        if requiresNamedDevice, deviceID == nil { throw refusalForUnnamedDevice }
+        guard let deviceID else {
+            if requiresNamedDevice { throw refusalForUnnamedDevice }
+            return
+        }
+        if rejectsUnknownDeviceIDs, !devices.contains(where: { $0.id == deviceID }) {
+            throw SpotifyError.noActiveDevice
+        }
+        if refusesCommandsToInactiveDevices, deviceID != activeDeviceID {
+            throw SpotifyError.actionNotAllowed("Player command failed: Restriction violated")
+        }
     }
 
     func resume(deviceID: String?, accessToken: String) async throws {
@@ -207,6 +248,21 @@ final class FakeSpotifyPlayback: SpotifyPlaybackControlling {
         events.append("selectDevice")
     }
 
+    private(set) var notedActiveDeviceIDs: [String?] = []
+    func noteActiveDevice(id: String?) {
+        notedActiveDeviceIDs.append(id)
+    }
+
+    /// Plays handed to the Spotify app on this phone rather than sent over Connect.
+    var localPlayError: Error?
+    private(set) var localPlayRequests: [(ids: [String], index: Int)] = []
+
+    func playOnLocalApp(trackIDs: [String], startAt index: Int) async throws {
+        localPlayRequests.append((trackIDs, index))
+        record("playOnLocalApp:\(trackIDs.count)@\(index)")
+        if let localPlayError { throw localPlayError }
+    }
+
     /// When true, a transfer is accepted but the device never actually picks it up — Spotify
     /// answers before the device has, and some decline quietly.
     var transferSilentlyFails = false
@@ -223,6 +279,19 @@ final class FakeSpotifyPlayback: SpotifyPlaybackControlling {
         try failIfNeeded()
         playRequests.append((trackIDs, index))
         record("play")
+        // Spotify starts playing what it was told to. Leaving the reported track unchanged made
+        // the fake claim the *previous* track forever, which no real device does.
+        if trackIDs.indices.contains(index) {
+            state?.trackID = trackIDs[index]
+        }
+    }
+    /// Tracks appended to Spotify's queue rather than sent as a new context.
+    private(set) var queuedTrackIDs: [String] = []
+
+    func addToQueue(trackID: String) async throws {
+        try failIfNeeded()
+        queuedTrackIDs.append(trackID)
+        record("addToQueue:\(trackID)")
     }
 
     func resume() async throws { try failIfNeeded(); record("resume") }

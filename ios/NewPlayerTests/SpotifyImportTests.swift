@@ -81,7 +81,68 @@ final class SpotifyImportTests: XCTestCase {
             source: source, client: client, accessToken: "token", modelContext: context
         )
 
+        // Filed as one compilation: a single Artist row, and one Album under it.
         XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Compilation"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
+    }
+
+    /// Filing an album as a compilation must not cost the tracks their performers.
+    ///
+    /// Every row used to be written with the album's name — so a compilation's songs all read
+    /// "Compilation" and who actually played each one was gone from the library entirely.
+    func testACompilationKeepsEachTracksOwnArtist() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let client = FakeSpotifyClient()
+        client.tracks = [
+            .make(id: "1", title: "One", artist: "Alice", albumID: "mix", albumArtist: "Various", track: 1),
+            .make(id: "2", title: "Two", artist: "Bob", albumID: "mix", albumArtist: "Various", track: 2),
+        ]
+
+        try await SpotifyImportService.rescan(
+            source: source, client: client, accessToken: "token", modelContext: context
+        )
+
+        let byTitle = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<Song>()).map { ($0.title, $0.artist) }
+        )
+        XCTAssertEqual(byTitle["One"], "Alice")
+        XCTAssertEqual(byTitle["Two"], "Bob")
+    }
+
+    /// A track credited to several artists keeps all of them: a feature is part of who performed
+    /// it, and keeping only the lead credit is how "X, Y" quietly becomes "X".
+    func testATrackWithSeveralCreditsKeepsThemAll() {
+        let track = SpotifyTrack(
+            id: "1", title: "Duet", artistNames: ["Alice", "Bob"],
+            albumName: "Record", albumArtistNames: ["Alice"], trackNumber: 1,
+            durationSeconds: 100, albumID: "album-1", albumArtworkURL: nil
+        )
+
+        XCTAssertEqual(SpotifyImportService.trackArtistName(for: track), "Alice, Bob")
+    }
+
+    /// A single-artist album is unaffected — the track name and the album name agree.
+    func testAnOrdinaryAlbumStillFilesEveryTrackUnderItsArtist() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let client = FakeSpotifyClient()
+        client.tracks = [
+            .make(id: "1", title: "One", artist: "Alice", albumID: "solo", albumArtist: "Alice", track: 1),
+            .make(id: "2", title: "Two", artist: "Alice", albumID: "solo", albumArtist: "Alice", track: 2),
+        ]
+
+        try await SpotifyImportService.rescan(
+            source: source, client: client, accessToken: "token", modelContext: context
+        )
+
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Alice"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Alice"])
     }
 
     /// The sync records where the cover lives; it does not fetch it.
@@ -420,44 +481,5 @@ final class SpotifyImportTests: XCTestCase {
 
         XCTAssertEqual(try context.fetch(FetchDescriptor<Song>()).map(\.relativePath), ["1"])
         XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1, "the removed album should go")
-    }
-
-    // MARK: - Track artist versus release artist
-
-    /// A track row is about the track, so it shows that track's performer. The release artist
-    /// still names the album and groups the Artists screen — showing it against every track hid
-    /// exactly the difference a compilation exists to express.
-    func testEachTrackKeepsItsOwnArtist() async throws {
-        let container = try makeContainer()
-        let context = ModelContext(container)
-        let source = try makeSource(in: context)
-
-        let client = FakeSpotifyClient()
-        client.tracks = [
-            .make(id: "1", title: "One", artist: "Alice", albumID: "mix", albumArtist: "Various", track: 1),
-            .make(id: "2", title: "Two", artist: "Bob", albumID: "mix", albumArtist: "Various", track: 2),
-        ]
-
-        try await SpotifyImportService.rescan(
-            source: source, client: client, accessToken: "token", modelContext: context
-        )
-
-        let songs = try context.fetch(FetchDescriptor<Song>()).sorted { $0.track < $1.track }
-        XCTAssertEqual(songs.map(\.artist), ["Alice", "Bob"], "each row shows its own performer")
-        // The release is still one album, grouped under one artist.
-        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Compilation"])
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
-    }
-
-    /// A track with no artist of its own falls back to the release artist rather than blank.
-    func testATrackWithNoArtistFallsBackToTheReleaseArtist() {
-        let track = SpotifyTrack(
-            id: "1", title: "One", artistNames: [], albumName: "Record",
-            albumArtistNames: ["Alice"], trackNumber: 1, durationSeconds: 200,
-            albumID: "a", albumArtworkURL: nil
-        )
-        let rows = SpotifyImportService.makeRawSongs(from: [track])
-        XCTAssertEqual(rows.first?.artist, "Alice")
     }
 }

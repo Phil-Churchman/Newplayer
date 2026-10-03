@@ -82,7 +82,11 @@ enum SpotifyError: LocalizedError, Equatable {
         case .requestFailed(let detail):
             return "Couldn't read your Spotify library: \(detail)"
         case .notSignedIn:
-            return "Sign in to Spotify first."
+            // Reached with an account still connected, not only with none: a stored token that
+            // predates a scope the app now needs can never be refreshed into a working one, and
+            // playback fails with this while Sources goes on showing the account as signed in.
+            // "Sign in first" reads as a bug in that state, so this names the actual remedy.
+            return "Spotify needs authorizing again — open Sources and tap Authorize Spotify Again."
         case .actionNotAllowed(let reason):
             // Attributed, because this is Spotify's own wording relayed word for word. Shown
             // bare it reads as though this app produced it, and its phrasing ("Impossible to

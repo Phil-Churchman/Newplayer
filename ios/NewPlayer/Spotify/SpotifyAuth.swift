@@ -41,11 +41,17 @@ final class SpotifyAuth: NSObject, SpotifyAuthorizing {
     /// user-library-read covers saved tracks and albums; user-read-private carries the
     /// `product` field the Premium check reads; the two playback scopes are what Connect needs
     /// to read and drive whichever Spotify client is currently active.
+    ///
+    /// app-remote-control is what App Remote connects with, and it is the only way to wake the
+    /// Spotify app on this phone. Adding it here means tokens issued before it existed no longer
+    /// satisfy `hasAllRequiredScopes`, so the app asks for sign-in again rather than failing
+    /// every App Remote connection with a token that can never work.
     static let requiredScopes: Set<String> = [
         "user-library-read",
         "user-read-private",
         "user-read-playback-state",
         "user-modify-playback-state",
+        "app-remote-control",
     ]
 
     private static var scopes: String { requiredScopes.sorted().joined(separator: " ") }

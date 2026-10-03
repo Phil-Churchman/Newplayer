@@ -25,7 +25,17 @@ protocol SpotifyAPIClient: Sendable {
     func fetchPlaybackQueue(accessToken: String) async throws -> SpotifyQueueSnapshot
     /// Starts a specific set of tracks at a position within them. Naming a device both targets
     /// and activates it, which is how an open-but-idle Spotify app is woken.
+    ///
+    /// This *replaces* Spotify's playback context, which is what the app wants: its own queue is
+    /// the queue, and Spotify's is re-sent from the chosen track onward.
     func play(trackURIs: [String], startAt index: Int, deviceID: String?, accessToken: String) async throws
+    /// Appends one track to Spotify's own queue, leaving what is playing untouched.
+    ///
+    /// Needed because a play cannot build a queue on this phone. `PUT /me/player/play` with a
+    /// list of uris is refused there, and App Remote's own enqueue is accepted and then quietly
+    /// discarded — but once something is actually playing, ordinary Web API commands work on the
+    /// phone like any other device, and this is one of them.
+    func addToQueue(trackURI: String, deviceID: String?, accessToken: String) async throws
     /// Moves this account's playback onto a device, taking it over if another account is using
     /// it — a shared speaker can be visible to several accounts, and a transfer is how Connect
     /// claims one. Naming it in a play command only works on a device that is already ours.
@@ -87,12 +97,21 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
 
     /// The session these requests run on.
     ///
-    /// Timeouts are explicit: the default session waits a very long time, and a stuck request
-    /// part-way through paging a large library looks exactly like the app having hung.
+    /// Caching is switched off deliberately. Every one of these endpoints reports mutable state
+    /// — what is in your library, what is playing, which devices exist — and the default
+    /// configuration keeps a URL cache that will happily serve a stored copy of a GET. That is
+    /// what made a re-sync report the library exactly as it was: tracks removed in Spotify kept
+    /// coming back from the cache, and the merge preserved them because it was told they were
+    /// still there.
+    ///
+    /// Timeouts are explicit too: the default session waits a very long time, and a stuck
+    /// request part-way through paging a large library looks exactly like the app having hung.
     static func makeConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 120
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
         return configuration
     }
 
@@ -169,13 +188,40 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
 
         struct PlayerResponse: Decodable {
             struct Item: Decodable { let id: String? ; let duration_ms: Int? }
-            struct Device: Decodable { let id: String? }
+            struct Device: Decodable {
+                let id: String?
+                let name: String?
+                let type: String?
+                let is_restricted: Bool?
+                let is_active: Bool?
+            }
             let is_playing: Bool?
             let progress_ms: Int?
             let item: Item?
             let device: Device?
         }
         let decoded = try JSONDecoder().decode(PlayerResponse.self, from: data)
+
+        // Logged alongside the device count: /me/player and /me/player/devices can disagree, and
+        // which of them knows about a device — and whether Spotify marks it restricted — decides
+        // whether this is something the app can do anything about.
+        if let device = decoded.device {
+            // playing/track matter as much as the device: a play Spotify answers 204 to and
+            // then does not act on looks identical to a refused one unless the state that
+            // follows it is in the log.
+            print("""
+            SpotifyWebAPIClient: /me/player device \(device.name ?? "?") \
+            (\(device.type ?? "?")) id=\(device.id ?? "none") \
+            restricted=\(device.is_restricted.map(String.init) ?? "?") \
+            active=\(device.is_active.map(String.init) ?? "?") \
+            playing=\(decoded.is_playing.map(String.init) ?? "?") \
+            track=\(decoded.item?.id ?? "none") \
+            progress=\(decoded.progress_ms.map(String.init) ?? "?")ms
+            """)
+        } else {
+            print("SpotifyWebAPIClient: /me/player reports no device at all")
+        }
+
         return SpotifyPlayerState(
             isPlaying: decoded.is_playing ?? false,
             progressSeconds: TimeInterval(decoded.progress_ms ?? 0) / 1000,
@@ -196,10 +242,26 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
             }
             let devices: [Device]
         }
-        let response: DevicesResponse = try await get(
-            URL(string: "https://api.spotify.com/v1/me/player/devices")!,
-            accessToken: accessToken
-        )
+        // This one request bypasses the URL cache. It reports which devices exist *now*, and a
+        // stored answer from a moment when nothing was active is indistinguishable from Spotify
+        // saying there is nowhere to play — which is the failure being chased here.
+        var request = URLRequest(url: URL(string: "https://api.spotify.com/v1/me/player/devices")!)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, urlResponse) = try await session.data(for: request)
+        guard let http = urlResponse as? HTTPURLResponse else {
+            throw SpotifyError.requestFailed("no response")
+        }
+        if http.statusCode == 401 { throw SpotifyError.permissionsMissing }
+        guard (200..<300).contains(http.statusCode) else {
+            throw SpotifyError.requestFailed("HTTP \(http.statusCode)")
+        }
+
+        let response = try JSONDecoder().decode(DevicesResponse.self, from: data)
+        // Logged so an empty list can be told apart from a request that never got there.
+        print("SpotifyWebAPIClient: /me/player/devices returned \(response.devices.count) device(s)")
+
         return response.devices.compactMap { device in
             guard let id = device.id else { return nil }
             return SpotifyDevice(
@@ -210,6 +272,15 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
                 type: device.type ?? ""
             )
         }
+    }
+
+    func addToQueue(trackURI: String, deviceID: String?, accessToken: String) async throws {
+        // The uri goes in the query string and `spotify:track:…` is full of colons, so it has to
+        // be escaped — unescaped it truncates the parameter and Spotify rejects the call.
+        let escaped = trackURI.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? trackURI
+        var path = "me/player/queue?uri=\(escaped)"
+        if let deviceID { path += "&device_id=\(deviceID)" }
+        try await send("POST", path: path, body: nil, accessToken: accessToken)
     }
 
     func play(trackURIs: [String], startAt index: Int, deviceID: String?, accessToken: String) async throws {
@@ -262,6 +333,7 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
                 position: entries.count
             ))
         }
+        print("SpotifyWebAPIClient: /me/player/queue current=\(response.currently_playing?.id ?? "none"), \(entries.count) entr(ies)")
         return SpotifyQueueSnapshot(currentTrackID: response.currently_playing?.id, entries: entries)
     }
 
@@ -328,6 +400,19 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
         guard let http = response as? HTTPURLResponse else {
             throw SpotifyError.requestFailed("no response")
         }
+        // Every player command logs its outcome, successes included. Logging only failures hid
+        // the state that actually matters here: Spotify accepting a command and then stopping.
+        // A 204 and a 404 lead to completely different investigations, and without the success
+        // case in the log there is no way to tell "refused" from "accepted, then went wrong".
+        //
+        // The body carries Spotify's own words, which is what separates a 404 meaning "Device
+        // not found" — the id named was rejected — from one meaning "No active device found",
+        // where the command arrived unaddressed.
+        let body = String(data: data, encoding: .utf8) ?? ""
+        print("""
+        SpotifyWebAPIClient: \(method) \(path) → HTTP \(http.statusCode)\
+        \(body.isEmpty ? "" : " \(body)")
+        """)
         // 404 here means "no active device" rather than a bad URL — Spotify's way of saying
         // there is nothing to control.
         if http.statusCode == 404 {

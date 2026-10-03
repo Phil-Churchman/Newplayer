@@ -102,9 +102,7 @@ extension MediaLibraryImportService {
             // Track order decides which one is "first"; the library hands them back unordered.
             let ordered = albumTracks.sorted { $0.trackNumber < $1.trackNumber }
             let albumName = ordered.first?.albumTitle.nilIfBlank ?? "Unknown Album"
-            // Names the release: what the Artists screen groups by, and what identifies the
-            // album. Each row still carries its own performer below.
-            let releaseArtist = artistName(for: ordered)
+            let artistName = artistName(for: ordered)
 
             // One render for the whole album, from its first track.
             let cover = ordered.first.flatMap { artworkForTrack($0.persistentID) }
@@ -112,11 +110,9 @@ extension MediaLibraryImportService {
             for (index, track) in ordered.enumerated() {
                 rows.append(RawSong(
                     title: track.title.nilIfBlank ?? "Unknown Title",
-                    // The track's own performer rather than the release artist — on a
-                    // compilation those differ, and the row is about the track.
-                    artist: track.artist.nilIfBlank ?? releaseArtist,
+                    artist: artistName,
                     album: albumName,
-                    albumArtist: releaseArtist,
+                    albumArtist: artistName,
                     track: track.trackNumber,
                     duration: track.duration,
                     relativePath: track.persistentID,

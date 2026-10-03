@@ -9,15 +9,26 @@ protocol SpotifyPlaybackControlling {
     func configure(clientID: String)
     /// Pins playback to one Connect device. Nil restores the automatic choice.
     func selectDevice(id: String?)
+    /// Tells the controller where Spotify is actually playing, so a device discovered earlier is
+    /// not used forever after Spotify has moved somewhere else. Never pins anything.
+    func noteActiveDevice(id: String?)
     /// Claims a device for this account, taking it from another account if one is using it.
     /// - Parameter play: whether playback should continue on the new device.
     func takeOverDevice(id: String, play: Bool) async throws
     func play(trackIDs: [String], startAt index: Int) async throws
+    /// Adds one track to the end of Spotify's queue without disturbing what is playing.
+    func addToQueue(trackID: String) async throws
     func resume() async throws
     func pause() async throws
     func skipToNext() async throws
     func skipToPrevious() async throws
     func seek(to seconds: TimeInterval) async throws
+    /// Plays on the Spotify app on this phone, bypassing Connect entirely.
+    ///
+    /// The Web API cannot reliably start playback there — it refuses with 403, or accepts with
+    /// 204 and then stops — while the same commands drive a Mac or a speaker without trouble.
+    /// This is the fallback for that, and it only makes sense for this device.
+    func playOnLocalApp(trackIDs: [String], startAt index: Int) async throws
     /// Nil when no Spotify client is active.
     func playerState() async throws -> SpotifyPlayerState?
     /// Spotify's own queue, so tracks queued from the Spotify app show up here too.
@@ -32,6 +43,8 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
 
     private let session: SpotifySession
     private let client: SpotifyAPIClient
+    /// Nil in tests that don't exercise local playback.
+    private let appRemote: SpotifyAppRemoteControlling?
     private var clientID = ""
     /// The device the user chose in Sources, if any.
     private var preferredDeviceID: String?
@@ -42,9 +55,24 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
     /// The user's choice wins; otherwise whatever was found last.
     private var deviceID: String? { preferredDeviceID ?? discoveredDeviceID }
 
-    init(session: SpotifySession, client: SpotifyAPIClient) {
+    init(
+        session: SpotifySession,
+        client: SpotifyAPIClient,
+        appRemote: SpotifyAppRemoteControlling? = nil
+    ) {
         self.session = session
         self.client = client
+        self.appRemote = appRemote
+    }
+
+    func playOnLocalApp(trackIDs: [String], startAt index: Int) async throws {
+        guard let appRemote else { throw SpotifyAppRemoteError.spotifyNotInstalled }
+        try await appRemote.play(
+            trackIDs: trackIDs,
+            startAt: index,
+            clientID: clientID,
+            accessToken: try await token()
+        )
     }
 
     func configure(clientID: String) {
@@ -55,6 +83,26 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
     func selectDevice(id: String?) {
         preferredDeviceID = id
         // A new choice supersedes anything found automatically before it.
+        discoveredDeviceID = nil
+    }
+
+    /// Forgets an automatically-discovered device once Spotify is playing somewhere else.
+    ///
+    /// `discoveredDeviceID` is remembered so that every command after a refusal goes to the same
+    /// place instead of re-deciding. The flaw was that it was remembered *forever*: pick up a
+    /// speaker once and every later command kept going there, even after playback had moved to
+    /// the phone. Those commands succeed — the speaker is a real device — so nothing ever
+    /// corrected it, and choosing a track in the app dragged playback back off the phone.
+    ///
+    /// This only ever clears, and that is the whole point. An earlier attempt at following the
+    /// active device *set* this from the same signal, which pinned commands to whatever
+    /// /me/player last named — and /me/player goes on naming a device after it has gone, so a
+    /// dead id got pinned and every command 404'd. Clearing cannot go stale: with nothing
+    /// discovered, commands are sent unaddressed and Spotify routes them to whatever is really
+    /// active, which is the behaviour wanted in the first place.
+    func noteActiveDevice(id: String?) {
+        guard discoveredDeviceID != nil, let id, id != discoveredDeviceID else { return }
+        print("SpotifyPlaybackController: Spotify moved to \(id) — forgetting the discovered device")
         discoveredDeviceID = nil
     }
 
@@ -71,6 +119,10 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
         let window = Self.window(of: trackIDs, around: index)
         let uris = window.ids.map { "spotify:track:\($0)" }
 
+        // Logged before the request rather than only on failure: what was sent, and where, is
+        // the first thing needed when Spotify accepts a play and then stops anyway.
+        print("SpotifyPlaybackController: play \(uris.count) uri(s) at offset \(window.offset), device=\(deviceID ?? "none"), first \(uris.prefix(3))")
+
         do {
             try await command { token, device in
                 try await self.client.play(
@@ -83,6 +135,16 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
         } catch {
             print("SpotifyPlaybackController: play failed for \(uris.count) uri(s), first \(uris.prefix(3)) — \(error)")
             throw error
+        }
+    }
+
+    func addToQueue(trackID: String) async throws {
+        try await command {
+            try await self.client.addToQueue(
+                trackURI: "spotify:track:\(trackID)",
+                deviceID: $1,
+                accessToken: $0
+            )
         }
     }
 
@@ -131,14 +193,55 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
             let device = try await chooseDevice()
             discoveredDeviceID = device.id
             try await withRetryOnRefusedPermissions { try await body($0, device.id) }
+        } catch SpotifyError.actionNotAllowed(let reason) {
+            // "Restriction violated" is how Spotify refuses a command it considers out of
+            // context, and two different situations produce it — needing opposite answers.
+            //
+            // With no device named there is nothing active to act on: the same state as the 404
+            // above, reported differently. Find a device and name it.
+            guard let target = deviceID else {
+                print("SpotifyPlaybackController: refused (\(reason ?? "no reason")) with nothing named; finding a device")
+                let device = try await chooseDevice()
+                discoveredDeviceID = device.id
+                try await withRetryOnRefusedPermissions { try await body($0, device.id) }
+                return
+            }
+
+            // With one named, the device is real and reachable but is not the one currently in
+            // charge, and Spotify will not start playback on it from a plain play request —
+            // naming a device in `/me/player/play` is not enough to claim it. A transfer is what
+            // claims it, which is what `/me/player` is for; the command then goes to a device
+            // that is already ours.
+            //
+            // This is the refusal seen when Spotify was paused on a speaker and the app was
+            // asked to play on the phone.
+            print("SpotifyPlaybackController: refused (\(reason ?? "no reason")) on \(target); taking the device over first")
+            try await takeOverDevice(id: target, play: false)
+            // Spotify answers the transfer before the device has picked it up, and a command
+            // sent into that gap is refused exactly as the first one was.
+            try? await Task.sleep(nanoseconds: Self.transferSettleNanoseconds)
+            try await withRetryOnRefusedPermissions { try await body($0, target) }
         }
     }
+
+    /// How long to let a transfer land before sending the command that follows it.
+    private static let transferSettleNanoseconds: UInt64 = 600_000_000
 
     /// Prefers a device already playing, then any Spotify will let us drive, favouring a phone —
     /// which is this one, in the usual case of the app running alongside Spotify.
     private func chooseDevice() async throws -> SpotifyDevice {
         let devices = try await client.fetchDevices(accessToken: try await token())
 
+        // An empty list is taken at face value. It is tempting to fall back on the device
+        // /me/player names — the two endpoints do disagree — but that reads the disagreement
+        // backwards. /me/player serves the *last known* context and keeps doing so after the
+        // device has gone; the device list reports what is registered with Connect right now.
+        // When they differ it is the list that is current, so the id from /me/player is a dead
+        // one, and naming it earns a 404 "Device not found" on the command and again on the
+        // retry — which is exactly the loop that stopped playback working.
+        //
+        // The error below is the honest answer, and its message tells the user to open Spotify,
+        // which is the thing that actually fixes it.
         guard !devices.isEmpty else { throw SpotifyError.noActiveDevice }
 
         let controllable = devices.filter { !$0.isRestricted }
@@ -172,12 +275,24 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
     }
 
     /// The slice to send, and where the chosen track sits within it.
+    ///
+    /// The window slides back from the end of the queue rather than always starting at the
+    /// chosen track. Starting there looks right until the chosen track is near the end: taking
+    /// a hundred from index 249 of 250 leaves exactly one, so replacing Spotify's context with
+    /// it reduced the whole queue to a single track. Appending hit that every time, because a
+    /// freshly appended track *is* the last one — add to a queue of more than a hundred and
+    /// everything else vanished.
+    ///
+    /// Anchoring the end instead keeps the window full whenever there are enough tracks to fill
+    /// it, so what is sent is the hundred tracks ending with the queue's end, and `offset` says
+    /// where in that the chosen track sits. Tracks before it are worth carrying for their own
+    /// sake: they are what Spotify's "previous" has to go back to.
     static func window(of trackIDs: [String], around index: Int) -> (ids: [String], offset: Int) {
+        let chosen = min(max(index, 0), max(trackIDs.count - 1, 0))
         guard trackIDs.count > maximumURIsPerRequest else {
-            return (trackIDs, min(max(index, 0), max(trackIDs.count - 1, 0)))
+            return (trackIDs, chosen)
         }
-        let start = min(max(index, 0), trackIDs.count - 1)
-        let end = min(start + maximumURIsPerRequest, trackIDs.count)
-        return (Array(trackIDs[start..<end]), 0)
+        let start = min(chosen, trackIDs.count - maximumURIsPerRequest)
+        return (Array(trackIDs[start..<(start + maximumURIsPerRequest)]), chosen - start)
     }
 }

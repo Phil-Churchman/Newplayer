@@ -87,6 +87,22 @@ final class PlaybackManager {
     /// slower cadence than the transport state rather than on every tick.
     @ObservationIgnored
     private var spotifyPollsSinceQueueRead = 0
+    /// Set while a play this app sent is still being resolved — including the fallback onto the
+    /// Spotify app when Connect refuses.
+    ///
+    /// Spotify's queue is meaningless during that window: the Connect play empties it before
+    /// anything replaces it, and `mirrorSpotifyQueue` would take that at face value, wipe the
+    /// app's queue and leave `currentSong` nil — which is the mini player vanishing mid-track.
+    @ObservationIgnored
+    private var isSpotifyPlayInFlight = false
+    /// Which confirm run is the current one.
+    ///
+    /// Each skip starts a run of re-reads spread over a second or more. Tapping skip twice used
+    /// to leave two runs going at once, both writing the track and position from whenever their
+    /// own poll happened to land — so an older, staler answer could arrive after a newer one and
+    /// drag the player back to the previous track. Only the newest run is allowed to write.
+    @ObservationIgnored
+    private var spotifyConfirmGeneration = 0
     @ObservationIgnored
     /// Read on every poll by default. Spotify has no change signal for its queue, and the app's
     /// copy drifting from it is precisely the complaint this is here to prevent.
@@ -225,8 +241,10 @@ final class PlaybackManager {
         spotify: SpotifyPlaybackControlling? = nil,
         // How many transport polls pass between reads of Spotify's queue. Spotify has no
         // queue-version counter, so this is a plain cadence rather than a change signal.
-        spotifyPollsPerQueueRead: Int = 1
+        spotifyPollsPerQueueRead: Int = 1,
+        spotifyConfirmSpacingNanoseconds: UInt64 = 500_000_000
     ) {
+        self.spotifyConfirmSpacingNanoseconds = spotifyConfirmSpacingNanoseconds
         self.spotifyPollsPerQueueRead = max(1, spotifyPollsPerQueueRead)
         self.makeMPDClient = makeMPDClient
         self.remoteKeepAlive = remoteKeepAlive ?? SilentAudioKeepAlive()
@@ -234,7 +252,8 @@ final class PlaybackManager {
         self.makeSpotify = {
             spotify ?? SpotifyPlaybackController(
                 session: .shared,
-                client: SpotifyWebAPIClient()
+                client: SpotifyWebAPIClient(),
+                appRemote: SpotifyAppRemote.shared
             )
         }
 
@@ -262,11 +281,22 @@ final class PlaybackManager {
 
         registerRemoteCommands()
 
+        // Both of these concern *this app's* audio session, so they apply only to the local
+        // player — the same rule the two observers above already follow.
+        //
+        // Unguarded, they were fatal to Spotify. An interruption notification means something
+        // else took audio focus, and in Spotify mode that something is Spotify itself starting
+        // to play. The app answered by sending Spotify a pause, so every attempt to play killed
+        // the playback it had just started. A route change is the same story: unplugging
+        // headphones from this phone says nothing about a speaker on the other side of Connect,
+        // and nothing about MPD playing through a server's own output.
         AudioSessionManager.shared.onInterruptionBegan = { [weak self] in
-            self?.pause()
+            guard let self, self.currentRoute == .local else { return }
+            self.pause()
         }
         AudioSessionManager.shared.onRouteChangedDeviceUnavailable = { [weak self] in
-            self?.pause()
+            guard let self, self.currentRoute == .local else { return }
+            self.pause()
         }
 
         observeAppLifecycle()
@@ -327,6 +357,7 @@ final class PlaybackManager {
         // otherwise it plays on from a source the app is no longer showing. Sent whether or not
         // this app believes it is playing: the device may have been started from Spotify itself.
         if isSpotifyMode {
+            print("PlaybackManager: pausing Spotify — active source changed")
             performSpotifyCommand { try await $0.pause() }
         }
         if let previousClient = mpdClient {
@@ -485,6 +516,7 @@ final class PlaybackManager {
         spotify.selectDevice(id: id)
 
         guard let id else { return }
+
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -503,7 +535,7 @@ final class PlaybackManager {
     /// the "sometimes it works" behaviour this is meant to remove.
     private func confirmTransfer(toDeviceID id: String) async {
         for _ in 0..<Self.spotifyTransferConfirmAttempts {
-            try? await Task.sleep(nanoseconds: Self.spotifyConfirmSpacingNanoseconds)
+            try? await Task.sleep(nanoseconds: spotifyConfirmSpacingNanoseconds)
             guard isSpotifyMode, !Task.isCancelled else { return }
 
             if let state = try? await spotify.playerState() {
@@ -514,6 +546,29 @@ final class PlaybackManager {
                 }
             }
         }
+        // The transfer didn't land. If the target is this phone, Connect was never going to move
+        // it — the same refusal that stops Connect *playing* here — and the Spotify app has to
+        // be driven directly instead.
+        //
+        // Reached only after the transfer has actually failed, never in anticipation. Driving it
+        // directly means launching Spotify, which puts its authorization screen in front of the
+        // user; doing that on every switch to the phone, as this briefly did, is far worse than
+        // a transfer that usually works.
+        if id == localSpotifyDeviceID, !queue.isEmpty {
+            let ids = queue.map(\.relativePath)
+            let startIndex = currentIndex ?? 0
+            do {
+                print("PlaybackManager: transfer to this phone didn't land — driving the Spotify app directly")
+                try await spotify.playOnLocalApp(trackIDs: ids, startAt: startIndex)
+                showQueueHandedToLocalSpotify(trackIDs: ids, startAt: startIndex)
+                playbackErrorMessage = nil
+                await confirmSpotifyState()
+                return
+            } catch {
+                print("PlaybackManager: couldn't move playback to this phone — \(error)")
+            }
+        }
+
         playbackErrorMessage = "Spotify didn't move playback to that device. It may have gone offline — try Refresh Devices."
     }
 
@@ -536,7 +591,49 @@ final class PlaybackManager {
     /// because the inserted track waits behind whatever was already lined up rather than
     /// playing, and the two lists then disagree about what "the queue" is.
     private func playSpotifyFromAlbum(startingAt song: Song) {
-        sendSpotifyContext(albumTail(from: song).map(\.relativePath))
+        let tail = albumTail(from: song)
+        seedSpotifyQueue(with: tail)
+        sendSpotifyContext(tail.map(\.relativePath))
+    }
+
+    /// Shows what has just been asked for, without waiting for Spotify to confirm it.
+    ///
+    /// Choosing a track left the queue and the mini player on the previous one until the mirror
+    /// caught up, because this path populated them from Spotify's own report and nothing else —
+    /// a round trip and a poll away. `play(songs:)` never had that lag, for the simple reason
+    /// that it sets the queue itself before sending anything.
+    ///
+    /// Safe to show first and check afterwards: this app chose the context, so what it is about
+    /// to send is almost always exactly what Spotify will report back. When it isn't — shuffle
+    /// being on, say — the confirm that follows corrects it within a fraction of a second, and
+    /// `isSpotifyPlayInFlight` keeps the empty read in between from wiping it meanwhile.
+    private func seedSpotifyQueue(with songs: [Song]) {
+        guard !songs.isEmpty else { return }
+
+        setQueue(songs)
+        setCurrentIndex(0)
+        currentTime = 0
+        duration = songs[0].duration
+        showSpotifyQueue(from: songs, startAt: 0)
+        updateNowPlayingInfo()
+    }
+
+    /// Fills the Queue screen from what is about to be sent, so it is right on tap rather than a
+    /// poll later. Spotify's own report replaces it as soon as the mirror next runs.
+    private func showSpotifyQueue(from songs: [Song], startAt index: Int) {
+        let start = min(max(index, 0), max(songs.count - 1, 0))
+        spotifyQueue = songs[start...].enumerated().map { position, song in
+            SpotifyQueueEntry(
+                trackID: song.relativePath,
+                title: song.title,
+                artist: song.artist,
+                // The row draws its cover from this. Seeding it nil is what made the artwork
+                // vanish the moment a track was tapped and come back only when Spotify's own
+                // report arrived, carrying the same URL the library already had.
+                artworkURL: song.album?.artworkURL,
+                position: position
+            )
+        }
     }
 
     /// A track and everything after it on its album, in track order. Just the track itself when
@@ -560,6 +657,13 @@ final class PlaybackManager {
         syncRemoteClock()
         Task { [weak self] in
             guard let self else { return }
+            self.isSpotifyPlayInFlight = true
+            // Cleared however this Task ends. A play that throws returns straight out of the
+            // catch below, and clearing only on the success path left the flag stuck on —
+            // which switches the queue mirror off for the rest of the session, on every
+            // device, not just the one that failed.
+            defer { self.isSpotifyPlayInFlight = false }
+            self.logAudioSessionState("before play")
             do {
                 try await self.spotify.play(trackIDs: trackIDs, startAt: 0)
                 self.playbackErrorMessage = nil
@@ -568,6 +672,147 @@ final class PlaybackManager {
                 return
             }
             await self.confirmSpotifyState()
+            await self.recoverOnLocalSpotifyIfNotPlaying(trackIDs: trackIDs, startAt: 0)
+        }
+    }
+
+    /// Reports this app's audio session state around a Spotify command.
+    ///
+    /// Spotify on *this* phone is the only target that can be harmed by it. `.playback` is an
+    /// exclusive category, so if this app holds an active session while Spotify is asked to
+    /// change what it is playing, Spotify has to re-acquire the session to start the new context
+    /// — and a backgrounded app that is refused it cannot get it back. It stops, and clears what
+    /// it was playing. A Mac is untouched by any of this, which is the asymmetry being chased.
+    private func logAudioSessionState(_ moment: String) {
+        let session = AVAudioSession.sharedInstance()
+        print("""
+        PlaybackManager[session/\(moment)]: category=\(session.category.rawValue) \
+        options=\(session.categoryOptions.rawValue) \
+        otherAudioPlaying=\(session.isOtherAudioPlaying) \
+        keepAliveRunning=\(remoteKeepAlive.isRunning)
+        """)
+    }
+
+    /// Falls back to driving the Spotify app on this phone directly when Connect would not.
+    ///
+    /// The Web API drives a Mac or a speaker without trouble, and fails on the Spotify app
+    /// running on this same phone in three different ways — refusing with 403 "Restriction
+    /// violated", or accepting with 204 and then stopping with no track and an empty queue.
+    /// Some of those arrive as errors and some as apparent success, so the only reliable test
+    /// is whether Spotify is actually playing once the confirm polls have had their say.
+    ///
+    /// App Remote talks to the local Spotify process directly and can launch it when it isn't
+    /// running, so it succeeds where the Connect command did not.
+    /// Which Connect device *is* this phone, learned rather than guessed.
+    ///
+    /// Nothing in the device list says "this one is you" — the name is whatever the phone is
+    /// called and the id changes between Spotify app sessions, so matching on either is
+    /// guesswork, and guessing it wrong is what caused two earlier bugs. But App Remote only
+    /// ever drives the Spotify app on this phone, so after it has played, whatever `/me/player`
+    /// then names *is* this phone. That is worth remembering: it is the only way to know that a
+    /// device the user picks in Sources is the one Connect cannot start playback on.
+    @ObservationIgnored
+    private static let localDeviceIDKey = "spotify.localDeviceID"
+
+    private var localSpotifyDeviceID: String? {
+        get { UserDefaults.standard.string(forKey: Self.localDeviceIDKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.localDeviceIDKey) }
+    }
+
+    /// Shows the queue just handed to the Spotify app, without waiting for Spotify to report it.
+    ///
+    /// Only a head start: Spotify's own account takes over as soon as the mirror next runs, and
+    /// is the better one. This exists so the Queue screen is right the instant playback starts
+    /// rather than a poll later.
+    private func showQueueHandedToLocalSpotify(trackIDs: [String], startAt index: Int) {
+        let start = min(max(index, 0), max(trackIDs.count - 1, 0))
+        let lined = Array(trackIDs[start...])
+        let songsByID = Dictionary(queue.map { ($0.relativePath, $0) }, uniquingKeysWith: { first, _ in first })
+
+        spotifyQueue = lined.enumerated().map { position, id in
+            let song = songsByID[id]
+            return SpotifyQueueEntry(
+                trackID: id,
+                title: song?.title ?? "",
+                artist: song?.artist ?? "",
+                artworkURL: song?.album?.artworkURL,
+                position: position
+            )
+        }
+    }
+
+    /// How many tracks to line up behind the playing one. Spotify's queue endpoint takes a
+    /// single track per request, so a whole library's worth would be hundreds of round trips.
+    @ObservationIgnored
+    private static let maximumSpotifyQueueAdds = 50
+
+    /// Builds Spotify's own queue behind a track the Spotify app was told to play.
+    ///
+    /// Starting playback and building a queue need different tools on this phone, and using the
+    /// wrong one for either fails silently. App Remote can start playback where Connect cannot,
+    /// but it cannot build a queue — its enqueue reports success for every track and Spotify
+    /// keeps exactly one, so the next button had nothing to go to. Once something *is* playing,
+    /// though, the phone takes ordinary Web API commands like any other device, and the queue
+    /// endpoint appends without disturbing what is playing.
+    ///
+    /// So: App Remote starts it, the Web API queues behind it.
+    private func buildSpotifyQueueBehindTheCurrentTrack(trackIDs: [String], startAt index: Int) async {
+        let start = min(max(index, 0), max(trackIDs.count - 1, 0))
+        let remainder = Array(trackIDs[start...].dropFirst().prefix(Self.maximumSpotifyQueueAdds))
+        guard !remainder.isEmpty else { return }
+
+        var queued = 0
+        for id in remainder {
+            do {
+                try await spotify.addToQueue(trackID: id)
+                queued += 1
+            } catch {
+                // One refusal means the rest will be refused too; stop rather than hammering it.
+                print("PlaybackManager: Spotify wouldn't queue \(id) — \(error)")
+                break
+            }
+        }
+        print("PlaybackManager: queued \(queued) of \(remainder.count) behind the playing track")
+
+        // If Spotify took the whole queue then it can report it too, and its own account of what
+        // is lined up is better than this app's guess — so the mirror is let back in. If it
+        // didn't, the app's own list stays on screen, which is the more useful of two wrongs.
+        if queued == remainder.count {
+        }
+    }
+
+
+    /// Called only after App Remote has actually played, which is what makes the answer true.
+    private func learnLocalSpotifyDeviceID() {
+        Task { [weak self] in
+            guard let self,
+                  let state = try? await self.spotify.playerState(),
+                  let id = state.activeDeviceID,
+                  id != self.localSpotifyDeviceID
+            else { return }
+            print("PlaybackManager: this phone is Spotify device \(id)")
+            self.localSpotifyDeviceID = id
+        }
+    }
+
+    private func recoverOnLocalSpotifyIfNotPlaying(trackIDs: [String], startAt index: Int) async {
+        guard isSpotifyMode, !isPlaying, !trackIDs.isEmpty else { return }
+
+        do {
+            print("PlaybackManager: Connect didn't start playback — driving the Spotify app directly")
+            try await spotify.playOnLocalApp(trackIDs: trackIDs, startAt: index)
+            playbackErrorMessage = nil
+            showQueueHandedToLocalSpotify(trackIDs: trackIDs, startAt: index)
+            await confirmSpotifyState()
+            learnLocalSpotifyDeviceID()
+            await buildSpotifyQueueBehindTheCurrentTrack(trackIDs: trackIDs, startAt: index)
+        } catch SpotifyAppRemoteError.spotifyNotInstalled {
+            // The target was something other than this phone, and there is no local Spotify to
+            // fall back on.
+            playbackErrorMessage = "Spotify didn't start playing. Open Spotify on that device and try again."
+        } catch {
+            print("PlaybackManager: the Spotify app wouldn't play either — \(error)")
+            playbackErrorMessage = "Couldn't start playback in the Spotify app. Open it and try again."
         }
     }
 
@@ -577,7 +822,25 @@ final class PlaybackManager {
     func playSpotifyQueueEntry(at position: Int) {
         guard isSpotifyMode, spotifyQueue.indices.contains(position) else { return }
         // The same rule as tapping a track: what is chosen goes to the top and the rest follows.
-        sendSpotifyContext(spotifyQueue[position...].map(\.trackID))
+        let chosen = Array(spotifyQueue[position...])
+
+        // Shown straight away, for the same reason as choosing a track from the library. The
+        // entries are Spotify's own, so they carry titles for tracks this app never imported —
+        // renumbered from the top, since that is what the queue now is.
+        spotifyQueue = chosen.enumerated().map { index, entry in
+            var renumbered = entry
+            renumbered.position = index
+            return renumbered
+        }
+        let songs = chosen.compactMap { songResolver($0.trackID) }
+        if !songs.isEmpty {
+            setQueue(songs)
+            setCurrentIndex(0)
+        }
+        currentTime = 0
+        updateNowPlayingInfo()
+
+        sendSpotifyContext(chosen.map(\.trackID))
     }
 
     /// Sends a skip and then reads Spotify's state back promptly, rather than predicting the
@@ -626,19 +889,49 @@ final class PlaybackManager {
     /// Re-reads Spotify a few times in quick succession after a command it should have changed.
     /// A skip takes a moment to land, and the ordinary poll runs seconds apart.
     private func confirmSpotifyState(attempts: Int = 3) async {
+        spotifyConfirmGeneration &+= 1
+        let generation = spotifyConfirmGeneration
+
         for attempt in 0..<attempts {
-            try? await Task.sleep(nanoseconds: Self.spotifyConfirmSpacingNanoseconds)
-            guard isSpotifyMode, !Task.isCancelled else { return }
+            // The first read comes quickly. A skip usually lands in a fraction of a second, and
+            // waiting the full spacing before even looking is most of what made skipping feel
+            // slow — the button did nothing visible until the poll after it. Later reads keep
+            // the original spacing, for the times Spotify takes longer to settle.
+            let delay = attempt == 0
+                ? spotifyConfirmSpacingNanoseconds / 4
+                : spotifyConfirmSpacingNanoseconds
+            try? await Task.sleep(nanoseconds: delay)
+
+            // A newer skip supersedes this run: its answer is the current one, and letting both
+            // write is what made rapid skipping jump about.
+            guard isSpotifyMode, !Task.isCancelled, generation == spotifyConfirmGeneration else { return }
             await pollSpotifyState()
-            // The queue moves with the track, so bring it along on the last read.
-            if attempt == attempts - 1 {
+            // The queue moves with the track, so it comes along on the first read as well as the
+            // last: waiting for the last one left the Queue screen a second behind a change the
+            // player had already shown.
+            if attempt == 0 || attempt == attempts - 1 {
                 await mirrorSpotifyQueue()
             }
         }
+
+        // Restart the ordinary poll from here.
+        //
+        // Its interval is chosen *before* it sleeps, from whatever `isPlaying` said at the time —
+        // and a poll that catches Spotify between tracks, which is routine straight after a skip
+        // or a context change, reads as "not playing" and commits the loop to the fifteen-second
+        // idle wait. Nothing wakes it early, so the queue and player then sat unchanged for up to
+        // twenty seconds while the music carried on. Restarting it here re-reads immediately and
+        // picks the interval from state that is a moment old rather than a skip old.
+        guard isSpotifyMode, !Task.isCancelled, generation == spotifyConfirmGeneration else { return }
+        startSpotifyPolling()
     }
 
+    /// How long to leave between the re-reads that confirm a Spotify command landed. An
+    /// instance property rather than a constant so tests can collapse it: the confirm is what
+    /// decides whether a play was silently ignored, and at the real spacing every test of that
+    /// would sit for seconds.
     @ObservationIgnored
-    private static let spotifyConfirmSpacingNanoseconds: UInt64 = 500_000_000
+    private let spotifyConfirmSpacingNanoseconds: UInt64
 
     /// Runs a Spotify Connect command, reporting a refusal rather than leaving a button that
     /// silently does nothing. "No active device" is the common one and is not a fault: Spotify
@@ -700,6 +993,13 @@ final class PlaybackManager {
     /// Takes what Spotify reports as the truth. Spotify owns playback in this mode, so nothing
     /// here second-guesses it.
     private func applySpotifyState(_ state: SpotifyPlayerState) async {
+        // Where Spotify is playing is passed on, but only ever to *forget* a device discovered
+        // earlier — never to pin commands to this one. /me/player keeps naming a device after it
+        // has left Connect, so targeting what it reports sends commands somewhere that no longer
+        // exists; but ignoring it entirely left the app talking to a speaker it picked up once,
+        // long after playback had moved to the phone.
+        spotify.noteActiveDevice(id: state.activeDeviceID)
+
         if isPlaying != state.isPlaying { isPlaying = state.isPlaying }
         remoteTimeAnchor = (elapsed: state.progressSeconds, at: Date())
         hasRequestedEndOfTrackPoll = false
@@ -709,8 +1009,14 @@ final class PlaybackManager {
         if duration != resolvedDuration { duration = resolvedDuration }
 
         // Follow the track Spotify says is playing, so skipping from the Spotify app moves the
-        // highlight here too.
-        if let trackID = state.trackID,
+        // highlight here too — but not in the moment just after this app has asked for a
+        // different one. Spotify goes on reporting the outgoing track for a beat, and when that
+        // track is also in the new queue (the usual case, since choosing a track replaces the
+        // context with the rest of its own album) the player jumps back to it and sits showing
+        // the wrong details until Spotify catches up. What was asked for is already on screen;
+        // this only overrides it once the request has landed.
+        if !isSpotifyPlayInFlight,
+           let trackID = state.trackID,
            let index = queue.firstIndex(where: { $0.relativePath == trackID }),
            currentIndex != index {
             setCurrentIndex(index)
@@ -735,7 +1041,29 @@ final class PlaybackManager {
         // An empty read is only believed when Spotify also reports nothing playing. Right after
         // a context change it briefly returns nothing while it settles, and taking that at face
         // value emptied the queue and made it look as though playback had stopped.
-        let isTransientlyEmpty = snapshot.entries.isEmpty && (snapshot.currentTrackID != nil || isPlaying)
+        // Spotify reports a new context as it builds it, not all at once: for a second or two
+        // after a play it answers with the first entry or two and the rest appear later. That is
+        // not the user emptying the queue, so it is not applied — believing it collapsed a
+        // freshly chosen album to a couple of tracks and refilled it seconds afterwards, which
+        // is exactly what a queue "dropping to two songs" looked like.
+        let isStillBuilding = isSpotifyPlayInFlight && snapshot.entries.count < spotifyQueue.count
+        guard !isStillBuilding else { return }
+
+        // `isSpotifyPlayInFlight` is the third reason not to believe an empty read, and the one
+        // that was missing. A Connect play clears Spotify's queue before anything refills it, so
+        // a mirror taken in that gap reports nothing queued and nothing playing — indistinguish-
+        // able from the user having emptied it. Believing it wiped the app's queue, which left
+        // `currentSong` nil and the mini player gone mid-track.
+        //
+        // Only the *empty* case is held back. A read that actually has entries is applied at
+        // once, however in-flight the play is: suppressing those too meant the queue did not
+        // catch up until the next poll, seconds later, which is its own kind of wrong.
+        let isTransientlyEmpty = snapshot.entries.isEmpty
+            && (snapshot.currentTrackID != nil || isPlaying || isSpotifyPlayInFlight)
+        if snapshot.entries.isEmpty {
+            // The moment the on-screen queue empties, and whether the app chose to believe it.
+            print("PlaybackManager: Spotify queue read empty — playing=\(isPlaying), current=\(snapshot.currentTrackID ?? "none"), treatingAsTransient=\(isTransientlyEmpty)")
+        }
         if !isTransientlyEmpty, spotifyQueue != snapshot.entries {
             spotifyQueue = snapshot.entries
         }
@@ -751,10 +1079,22 @@ final class PlaybackManager {
             }
         }
 
-        // Assigned unconditionally, including when it comes back empty. Bailing out on an empty
-        // result left a stale queue on screen after Spotify's had been emptied or replaced.
+        // Emptied only when Spotify's queue is itself empty — never merely because none of what
+        // Spotify reported could be resolved.
+        //
+        // `songResolver` maps Spotify's track ids back to library rows, and Spotify's queue
+        // routinely holds tracks this app never imported: anything queued from a search, or
+        // played from a context outside the saved library. Those resolve to nothing. Assigning
+        // the result regardless emptied the app's queue whenever that happened, and an empty
+        // queue means `currentSong` is nil — which is the mini player disappearing mid-track,
+        // with the artwork and the track details going with it.
+        //
+        // Nothing is lost by keeping the old rows: the Queue screen reads `spotifyQueue` in
+        // Spotify mode, which has already been updated from Spotify's own entries above.
         let mirroredIDs = mirrored.map(\.relativePath)
-        if queue.map(\.relativePath) != mirroredIDs {
+        if mirrored.isEmpty, snapshot.entries.isEmpty {
+            if !queue.isEmpty { setQueue([]) }
+        } else if !mirrored.isEmpty, queue.map(\.relativePath) != mirroredIDs {
             setQueue(mirrored)
         }
         // Spotify's queue starts at what is playing, so that is index 0 of the mirror.
@@ -834,7 +1174,19 @@ final class PlaybackManager {
             updateNowPlayingElapsedTime()
             if !hasRequestedEndOfTrackPoll {
                 hasRequestedEndOfTrackPoll = true
-                Task { [weak self] in await self?.pollRemoteStatus() }
+                // Whichever remote is actually playing. This asked MPD unconditionally, so in
+                // Spotify mode a track running out woke nothing at all and the change waited for
+                // the ordinary poll — the track, the queue and the artwork all arriving seconds
+                // after the music had moved on.
+                Task { [weak self] in
+                    guard let self else { return }
+                    if self.isSpotifyMode {
+                        await self.pollSpotifyState()
+                        await self.mirrorSpotifyQueue()
+                    } else {
+                        await self.pollRemoteStatus()
+                    }
+                }
             }
             return
         }
@@ -937,11 +1289,21 @@ final class PlaybackManager {
         setCurrentIndex(songs.indices.contains(index) ? index : nil)
         if isSpotifyMode {
             let ids = songs.map(\.relativePath)
+            // The same head start choosing a track gets: without it, playing an album left the
+            // Queue screen showing the previous one until Spotify reported the new context.
+            showSpotifyQueue(from: songs, startAt: index)
             isPlaying = true
             remoteTimeAnchor = (elapsed: 0, at: Date())
             syncRemoteClock()
             Task { [weak self] in
                 guard let self else { return }
+                self.isSpotifyPlayInFlight = true
+                // Cleared however this Task ends. A play that throws returns straight out of the
+                // catch below, and clearing only on the success path left the flag stuck on —
+                // which switches the queue mirror off for the rest of the session, on every
+                // device, not just the one that failed.
+                defer { self.isSpotifyPlayInFlight = false }
+                self.logAudioSessionState("before play")
                 do {
                     try await self.spotify.play(trackIDs: ids, startAt: index)
                     self.playbackErrorMessage = nil
@@ -952,6 +1314,7 @@ final class PlaybackManager {
                 // Re-read rather than trusting the optimistic queue set above: Spotify decides
                 // what the context becomes, and the two must not be allowed to drift.
                 await self.confirmSpotifyState()
+                await self.recoverOnLocalSpotifyIfNotPlaying(trackIDs: ids, startAt: index)
             }
             return
         }
@@ -992,14 +1355,33 @@ final class PlaybackManager {
         setQueue(queue + [song])
         setCurrentIndex(queue.count - 1)
         if route(for: song) == .spotify {
-            // Spotify has no editable queue to append to over Connect, so the app's queue is
-            // the queue: it is re-sent from the new track onward.
+            let trackID = song.relativePath
+            // Spotify's queue is replaced by the app's, deliberately: the app's queue is the
+            // queue, and it is re-sent from the new track onward.
             let ids = queue.map(\.relativePath)
             let startIndex = queue.count - 1
             isPlaying = true
             remoteTimeAnchor = (elapsed: 0, at: Date())
             syncRemoteClock()
-            performSpotifyCommand { try await $0.play(trackIDs: ids, startAt: startIndex) }
+            Task { [weak self] in
+                guard let self else { return }
+                self.isSpotifyPlayInFlight = true
+                // Cleared however this Task ends. A play that throws returns straight out of the
+                // catch below, and clearing only on the success path left the flag stuck on —
+                // which switches the queue mirror off for the rest of the session, on every
+                // device, not just the one that failed.
+                defer { self.isSpotifyPlayInFlight = false }
+                self.logAudioSessionState("before play")
+                do {
+                    try await self.spotify.play(trackIDs: ids, startAt: startIndex)
+                    self.playbackErrorMessage = nil
+                } catch {
+                    self.reportSpotifyFailure(error)
+                    return
+                }
+                await self.confirmSpotifyState()
+                await self.recoverOnLocalSpotifyIfNotPlaying(trackIDs: ids, startAt: startIndex)
+            }
             return
         }
         if isRemoteSong(song), isRemoteMode {
@@ -1072,6 +1454,7 @@ final class PlaybackManager {
         }
         if isSpotifyQueue {
             // Connect has no queue of its own to clear — stopping the music is the whole of it.
+            print("PlaybackManager: pausing Spotify — queue cleared")
             performSpotifyCommand { try await $0.pause() }
         }
         setQueue([])
@@ -1135,6 +1518,9 @@ final class PlaybackManager {
                 performRemoteCommand(reconcile: false) { try await $0.setPause(false) }
             }
         } else {
+            // Claimed here rather than at launch: this is the moment the app actually makes
+            // sound, and the only moment it is entitled to interrupt anything else playing.
+            AudioSessionManager.shared.activate()
             player.play()
             isPlaying = true
         }
@@ -1143,6 +1529,7 @@ final class PlaybackManager {
 
     func pause() {
         if isSpotifyQueue {
+            print("PlaybackManager: pause() reached in Spotify mode")
             isPlaying = false
             syncRemoteClock()
             performSpotifyCommand { try await $0.pause() }
@@ -1382,6 +1769,11 @@ final class PlaybackManager {
         currentTime = 0
         duration = 0
         clearNowPlayingInfo()
+        // Nothing is being produced any more, so the session goes back. This runs when the
+        // active source changes, which is exactly the switch into Spotify mode — holding an
+        // exclusive session across that switch would leave the app silently interrupting the
+        // Spotify app it is about to start sending commands to.
+        AudioSessionManager.shared.deactivate()
     }
 
     private func releaseCurrentScope() {

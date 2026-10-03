@@ -39,6 +39,13 @@ final class SourcesViewModel: ObservableObject {
     @Published private(set) var spotifyDevices: [SpotifyDevice] = []
     @Published private(set) var isLoadingSpotifyDevices = false
     @Published var spotifyDeviceMessage: String?
+    /// Set when Spotify won't answer for the stored token at all.
+    ///
+    /// A token carries the permissions it was issued with for life — a refresh does not widen
+    /// it — so when the app starts needing a scope the stored token never had, every request
+    /// fails and no amount of retrying helps. Only a fresh sign-in does, and until this was
+    /// surfaced the only route to one was Sign Out, or guessing that Resync would do it.
+    @Published private(set) var spotifyNeedsReauthorization = false
 
     private let mediaLibrary: MediaLibraryProviding
     private let spotifyAuth: SpotifyAuthorizing
@@ -156,7 +163,15 @@ final class SourcesViewModel: ObservableObject {
                 )
                 let devices = try await self.spotifyClient.fetchDevices(accessToken: token)
                 self.spotifyDevices = devices
+                self.spotifyNeedsReauthorization = false
                 self.spotifyDeviceMessage = Self.deviceHint(for: devices)
+            } catch SpotifyError.notSignedIn, SpotifyError.permissionsMissing {
+                // The account is still connected; its token simply can't do what the app now
+                // asks. Saying "sign in first" next to a screen that plainly shows an account
+                // reads as a bug, so it says what is actually wrong and offers the one fix.
+                self.spotifyDevices = []
+                self.spotifyNeedsReauthorization = true
+                self.spotifyDeviceMessage = "Spotify needs to be authorized again before playback will work."
             } catch {
                 self.spotifyDevices = []
                 self.spotifyDeviceMessage = (error as? SpotifyError)?.errorDescription

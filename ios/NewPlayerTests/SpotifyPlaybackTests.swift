@@ -142,13 +142,46 @@ final class SpotifyPlaybackTests: XCTestCase {
     }
 
     /// A long queue is sent as a window: Spotify caps the URIs one request may carry.
-    func testALongQueueIsSentAsAWindowStartingAtTheChosenTrack() {
+    func testALongQueueIsSentAsAWindowContainingTheChosenTrack() {
         let ids = (0..<250).map { "t\($0)" }
         let window = SpotifyPlaybackController.window(of: ids, around: 200)
 
-        XCTAssertEqual(window.ids.first, "t200")
-        XCTAssertLessThanOrEqual(window.ids.count, 100)
+        XCTAssertEqual(window.ids.count, 100)
+        XCTAssertEqual(window.ids[window.offset], "t200", "the chosen track must be what plays")
+    }
+
+    /// The regression this covers wiped the queue.
+    ///
+    /// The window used to start at the chosen track, which is fine in the middle and useless at
+    /// the end: a hundred taken from index 249 of 250 is one track. An appended track is always
+    /// the last one, so adding to a queue of more than a hundred replaced Spotify's context with
+    /// that single track and everything else was gone.
+    func testAppendingToALongQueueStillSendsAFullWindow() {
+        let ids = (0..<250).map { "t\($0)" }
+        let window = SpotifyPlaybackController.window(of: ids, around: 249)
+
+        XCTAssertEqual(window.ids.count, 100, "a track at the end must not collapse the window")
+        XCTAssertEqual(window.ids[window.offset], "t249")
+        XCTAssertEqual(window.ids.last, "t249", "the queue's end is the window's end")
+    }
+
+    /// Near the start there is nothing to slide back to, so the window begins at the beginning.
+    func testAChosenTrackNearTheStartWindowsFromTheStart() {
+        let ids = (0..<250).map { "t\($0)" }
+        let window = SpotifyPlaybackController.window(of: ids, around: 0)
+
+        XCTAssertEqual(window.ids.first, "t0")
+        XCTAssertEqual(window.ids.count, 100)
         XCTAssertEqual(window.offset, 0)
+    }
+
+    /// Exactly at the cap is still sent whole — the window only applies beyond it.
+    func testAQueueExactlyAtTheCapIsSentWhole() {
+        let ids = (0..<100).map { "t\($0)" }
+        let window = SpotifyPlaybackController.window(of: ids, around: 99)
+
+        XCTAssertEqual(window.ids, ids)
+        XCTAssertEqual(window.offset, 99)
     }
 
     func testAShortQueueIsSentWholeWithTheChosenOffset() {
@@ -836,5 +869,45 @@ final class SpotifyPlaybackTests: XCTestCase {
     func testSpotifysWordingIsAttributedToSpotify() {
         let message = SpotifyError.actionNotAllowed("Impossible to open link").errorDescription
         XCTAssertEqual(message, "Spotify: Impossible to open link")
+    }
+
+    /// The bug: playing anything on Spotify stopped it dead and emptied the queue.
+    ///
+    /// An interruption notification means another app took audio focus, and in Spotify mode that
+    /// other app is Spotify, starting the very track just asked for. The handler answered by
+    /// sending Spotify a pause, so the app destroyed its own playback every time. The two
+    /// AVPlayer observers beside it were already guarded to the local route; these were not.
+    func testAnAudioInterruptionDoesNotPauseSpotify() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = PlaybackManager(spotify: remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        AudioSessionManager.shared.onInterruptionBegan?()
+        await settle()
+
+        XCTAssertFalse(remote.commands.contains("pause"), "Spotify owns the audio; this app must not pause it")
+        XCTAssertTrue(manager.isPlaying)
+        _ = manager
+    }
+
+    /// Unplugging headphones from this phone says nothing about a speaker on the far side of
+    /// Connect.
+    func testARouteChangeDoesNotPauseSpotify() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = PlaybackManager(spotify: remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        AudioSessionManager.shared.onRouteChangedDeviceUnavailable?()
+        await settle()
+
+        XCTAssertFalse(remote.commands.contains("pause"))
+        XCTAssertTrue(manager.isPlaying)
+        _ = manager
     }
 }

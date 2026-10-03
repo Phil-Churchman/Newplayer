@@ -165,9 +165,8 @@ final class MediaLibraryImportServiceTests: XCTestCase {
     // MARK: - Album artist, compilations, and album covers
 
     /// iTunes libraries are tagged album-first: the per-track artist is often a featured credit,
-    /// and grouping by it splits a release across the Artists list. The album artist therefore
-    /// names the release — while each row keeps its own performer, asserted separately.
-    func testTheAlbumArtistNamesTheRelease() async throws {
+    /// and using it splits a release across the Artists list.
+    func testTheAlbumArtistIsUsedAsTheArtist() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
@@ -180,7 +179,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
         let songs = try context.fetch(FetchDescriptor<Song>())
-        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Alice"], "the album artist names the release")
+        XCTAssertEqual(Set(songs.map(\.artist)), ["Alice"], "the album artist, not the track credit")
         XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Alice"])
     }
 
@@ -200,7 +199,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
 
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
-        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Compilation"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Compilation"])
     }
 
     /// A Various Artists record would otherwise appear once per guest in the Artists list.
@@ -218,7 +217,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
 
         let songs = try context.fetch(FetchDescriptor<Song>())
         XCTAssertEqual(songs.count, 3)
-        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Compilation"], "every track in the album, not just some")
+        XCTAssertEqual(Set(songs.map(\.artist)), ["Compilation"], "every track in the album, not just some")
         XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
         XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
     }
@@ -235,7 +234,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
 
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
-        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Alice"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Alice"])
     }
 
     /// Compilations are decided per album — a mixed record must not drag a normal one with it.
@@ -252,9 +251,7 @@ final class MediaLibraryImportServiceTests: XCTestCase {
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
         let songs = try context.fetch(FetchDescriptor<Song>())
-        // Compared on albumArtist: that is what the compilation rule sets, while `artist` stays
-        // the track's own performer.
-        let byTitle = Dictionary(uniqueKeysWithValues: songs.map { ($0.title, $0.albumArtist) })
+        let byTitle = Dictionary(uniqueKeysWithValues: songs.map { ($0.title, $0.artist) })
         XCTAssertEqual(byTitle["One"], "Compilation")
         XCTAssertEqual(byTitle["Two"], "Compilation")
         XCTAssertEqual(byTitle["Solo"], "Carol")
@@ -324,24 +321,5 @@ final class MediaLibraryImportServiceTests: XCTestCase {
         let album = try XCTUnwrap(try context.fetch(FetchDescriptor<Album>()).first)
         XCTAssertNotNil(album.artwork, "the cover the library returned should have been saved")
         XCTAssertNotNil(album.thumbnail)
-    }
-
-    /// The same rule for the Music library: rows show the track's performer, while the release
-    /// artist still names the album and groups the Artists screen.
-    func testEachTrackKeepsItsOwnArtist() async throws {
-        let container = try makeContainer()
-        let context = ModelContext(container)
-        let source = try makeSource(in: context)
-
-        let library = FakeMediaLibrary()
-        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Mixtape", albumArtist: "Various", track: 1)
-        library.addTrack(id: "2", title: "Two", artist: "Bob", album: "Mixtape", albumArtist: "Various", track: 2)
-
-        try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
-
-        let songs = try context.fetch(FetchDescriptor<Song>()).sorted { $0.track < $1.track }
-        XCTAssertEqual(songs.map(\.artist), ["Alice", "Bob"])
-        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Compilation"])
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
     }
 }

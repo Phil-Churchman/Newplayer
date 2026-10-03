@@ -265,6 +265,28 @@ struct SourcesView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    // Shown only when the stored token can no longer do what playback needs.
+                    // Signing in again is the only fix — a refresh cannot widen a token — and
+                    // without this the only route to one was Sign Out and start over.
+                    if viewModel.spotifyNeedsReauthorization {
+                        Button {
+                            viewModel.connectSpotify(
+                                clientID: spotifySource.spotifyClientID,
+                                existingSource: spotifySource,
+                                allSources: sources,
+                                modelContext: modelContext
+                            )
+                        } label: {
+                            HStack {
+                                Text("Authorize Spotify Again")
+                                if viewModel.isSigningIntoSpotify {
+                                    Spacer()
+                                    ProgressView()
+                                }
+                            }
+                        }
+                        .disabled(viewModel.isSigningIntoSpotify)
+                    }
                     Button("Sign Out", role: .destructive) {
                         viewModel.signOutOfSpotify(source: spotifySource, allSources: sources, modelContext: modelContext)
                     }

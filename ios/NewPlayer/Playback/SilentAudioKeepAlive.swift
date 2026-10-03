@@ -35,6 +35,11 @@ final class SilentAudioKeepAlive: NowPlayingSessionHolding {
             return
         }
 
+        // The session is no longer claimed at launch, so the silence that holds the widget has
+        // to claim it here. Guarded by the `isOtherAudioPlaying` check above, which is what
+        // keeps this from interrupting anything — including Spotify on this same phone.
+        AudioSessionManager.shared.activate()
+
         do {
             let player = try AVAudioPlayer(data: Self.silentWAVData())
             player.numberOfLoops = -1

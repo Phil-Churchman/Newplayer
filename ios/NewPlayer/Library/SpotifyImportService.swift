@@ -94,9 +94,7 @@ enum SpotifyImportService {
         for (_, albumTracks) in grouped {
             let ordered = albumTracks.sorted { $0.trackNumber < $1.trackNumber }
             let albumName = ordered.first?.albumName.nilIfBlank ?? "Unknown Album"
-            // Names the release: what the Artists screen groups by, and what identifies the
-            // album. Each row still carries its own performer below.
-            let releaseArtist = artistName(for: ordered)
+            let albumArtist = albumArtistName(for: ordered)
             // One URL for the album, from its first track — every track in it shows the same
             // cover once that URL has been fetched.
             let coverURL = ordered.first?.albumArtworkURL?.absoluteString
@@ -104,12 +102,18 @@ enum SpotifyImportService {
             for (index, track) in ordered.enumerated() {
                 rows.append(RawSong(
                     title: track.title.nilIfBlank ?? "Unknown Title",
-                    // The track's own performer, which is what a track row should show. On a
-                    // compilation, or anything with guests, it is not the release artist — and
-                    // showing the release artist against every track hid exactly that difference.
-                    artist: track.artistNames.joined(separator: ", ").nilIfBlank ?? releaseArtist,
+                    // The track's own performers, not the album's. On a compilation the album
+                    // artist is a label for the record as a whole — "Compilation", or whatever
+                    // Spotify calls it — and writing that onto every track threw away the one
+                    // piece of information that makes a compilation worth browsing: who is
+                    // actually playing each song.
+                    //
+                    // Safe to vary within an album because LibraryRowBuilder builds its Artist
+                    // and Album rows from `albumArtist` alone. The per-track name is carried on
+                    // the Song and changes no grouping.
+                    artist: trackArtistName(for: track) ?? albumArtist,
                     album: albumName,
-                    albumArtist: releaseArtist,
+                    albumArtist: albumArtist,
                     track: track.trackNumber,
                     duration: track.durationSeconds,
                     relativePath: track.id,
@@ -122,7 +126,9 @@ enum SpotifyImportService {
         return rows
     }
 
-    static func artistName(for albumTracks: [SpotifyTrack]) -> String {
+    /// The one name an album is filed under. Every track in the album shares it, because it is
+    /// what the Artist and Album rows are keyed on — it decides grouping, not display.
+    static func albumArtistName(for albumTracks: [SpotifyTrack]) -> String {
         let trackArtists = Set(albumTracks.compactMap { $0.artistNames.first?.nilIfBlank })
         if trackArtists.count > 1 {
             return "Compilation"
@@ -130,6 +136,17 @@ enum SpotifyImportService {
         return albumTracks.first?.albumArtistNames.first?.nilIfBlank
             ?? trackArtists.first
             ?? "Unknown Artist"
+    }
+
+    /// Everyone credited on a single track, in Spotify's own order.
+    ///
+    /// All of them rather than just the first: a feature is part of who performed the track, and
+    /// showing only the lead credit is how "X, Y" quietly becomes "X". Nil when Spotify credits
+    /// nobody, which leaves the caller to fall back on the album's name.
+    static func trackArtistName(for track: SpotifyTrack) -> String? {
+        let names = track.artistNames.compactMap(\.nilIfBlank)
+        guard !names.isEmpty else { return nil }
+        return names.joined(separator: ", ")
     }
 }
 

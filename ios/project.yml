@@ -11,6 +11,14 @@ settings:
 configs:
   Debug: debug
   Release: release
+packages:
+  # Spotify's own iOS SDK, for App Remote. The Web API can drive any Connect device *except*
+  # the Spotify app on this same phone when it isn't running: iOS won't let a suspended app
+  # start audio, so the backend accepts the command with a 204 and nothing ever plays. App
+  # Remote is the only thing that can wake it.
+  SpotifyiOS:
+    url: https://github.com/spotify/ios-sdk
+    from: 5.0.1
 targets:
   NewPlayer:
     type: application
@@ -40,6 +48,11 @@ targets:
           - CFBundleURLName: com.example.newplayer.spotify
             CFBundleURLSchemes: [newplayer]
         NSAppleMusicUsageDescription: New player reads your Music library so you can browse and play the songs already on this device.
+        # App Remote checks for, and launches, the Spotify app through its own URL scheme.
+        # Without this iOS answers "not installed" to that check whether it is or not.
+        LSApplicationQueriesSchemes: [spotify]
+    dependencies:
+      - package: SpotifyiOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.newplayer

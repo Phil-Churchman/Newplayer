@@ -28,7 +28,7 @@ protocol SpotifyPlaybackControlling {
     /// The Web API cannot reliably start playback there — it refuses with 403, or accepts with
     /// 204 and then stops — while the same commands drive a Mac or a speaker without trouble.
     /// This is the fallback for that, and it only makes sense for this device.
-    func playOnLocalApp(trackIDs: [String], startAt index: Int) async throws
+    func playOnLocalApp(trackIDs: [String], startAt index: Int, canUseConnection: Bool) async throws
     /// Nil when no Spotify client is active.
     func playerState() async throws -> SpotifyPlayerState?
     /// Spotify's own queue, so tracks queued from the Spotify app show up here too.
@@ -65,13 +65,25 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
         self.appRemote = appRemote
     }
 
-    func playOnLocalApp(trackIDs: [String], startAt index: Int) async throws {
+    func playOnLocalApp(
+        trackIDs: [String],
+        startAt index: Int,
+        canUseConnection: Bool
+    ) async throws {
         guard let appRemote else { throw SpotifyAppRemoteError.spotifyNotInstalled }
+
+        // No token when there is no connection to use. Offline the handover is a plain deep
+        // link, which asks Spotify for no permission at all — while fetching a token would
+        // refresh an expired one over the network and fail with `notSignedIn`, defeating the
+        // one path that still works. The very situation offline mode is for.
+        let token = canUseConnection ? try await token() : ""
+
         try await appRemote.play(
             trackIDs: trackIDs,
             startAt: index,
             clientID: clientID,
-            accessToken: try await token()
+            accessToken: token,
+            canUseConnection: canUseConnection
         )
     }
 

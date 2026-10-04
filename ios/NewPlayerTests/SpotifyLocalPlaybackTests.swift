@@ -129,7 +129,7 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
 
         XCTAssertNotNil(manager.playbackErrorMessage)
         XCTAssertTrue(
-            manager.playbackErrorMessage?.contains("didn't start playing") == true,
+            manager.playbackErrorMessage?.contains("no device available") == true,
             "got: \(manager.playbackErrorMessage ?? "nil")"
         )
     }
@@ -395,6 +395,259 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         await settle()
         XCTAssertEqual(manager.currentSong?.relativePath, "t3",
                        "and is still there once Spotify has caught up")
+    }
+
+    // MARK: - Offline mode
+
+    private func offlineSpotifySource() -> Source {
+        let source = spotifySource()
+        source.isOfflineMode = true
+        return source
+    }
+
+    /// Connect is a web service. With no network every command waits out its timeout before
+    /// failing through to the fallback that was always going to handle it, so a play took the
+    /// better part of a minute to start. Offline mode goes straight there.
+    func testOfflineModeSkipsConnectEntirely() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = makeManager(remote)
+        let source = offlineSpotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source), song("t2", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertTrue(remote.playRequests.isEmpty, "nothing should go out over Connect")
+        XCTAssertEqual(remote.localPlayRequests.last?.ids, ["t1", "t2"],
+                       "it goes straight to the Spotify app on this phone")
+    }
+
+    /// Online, Connect is still tried first — offline mode is a deliberate setting, not the
+    /// app deciding for itself that the network is unreliable.
+    func testOnlineStillPrefersConnect() async {
+        let remote = FakeSpotifyPlayback()
+        remote.state = playingState()
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertEqual(remote.playRequests.count, 1)
+        XCTAssertTrue(remote.localPlayRequests.isEmpty)
+    }
+
+    /// The queue is built over the Web API, which is exactly what cannot be reached offline.
+    /// The chosen track still plays; only the tracks behind it are lost, and waiting out a
+    /// timeout for each of them would be worse than not trying.
+    func testOfflineModeDoesNotTryToBuildTheQueueOverTheWebAPI() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = makeManager(remote)
+        let source = offlineSpotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source), song("t2", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertTrue(remote.queuedTrackIDs.isEmpty)
+    }
+
+    /// Nothing at all should go to Spotify's servers offline. Every one of these reaches a
+    /// service that cannot be reached, and each costs its timeout before failing.
+    func testOfflineModeMakesNoServerCallsAtAll() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = makeManager(remote)
+        let source = offlineSpotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source), song("t2", source: source)], startAt: 0)
+        await settle()
+        manager.skipToNext()
+        await settle()
+
+        let localHandover = "playOnLocalApp"
+        let serverCommands = remote.commands.filter { !$0.hasPrefix(localHandover) }
+        XCTAssertTrue(serverCommands.isEmpty, "went to Spotify's servers: \(remote.commands)")
+    }
+
+    /// Offline, App Remote's connection is worth nothing: authentication goes over the network,
+    /// so connecting fails with `wamp.error.authorization_failed` and a post-launch handshake
+    /// times out. Attempting either wasted seconds per play and filled the log with alarms.
+    func testOfflineModeDoesNotTryToUseAppRemotesConnection() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = makeManager(remote)
+        let source = offlineSpotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertEqual(remote.localPlayUsedConnection, [false])
+    }
+
+    /// Online it is worth having — a live connection lets the next play skip the launch.
+    func testOnlineStillUsesAppRemotesConnection() async {
+        let remote = FakeSpotifyPlayback()
+        remote.state = ignoredState()
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertEqual(remote.localPlayUsedConnection, [true])
+    }
+
+    /// Switching the setting while a Spotify source stays active has to reach the player. It is
+    /// read when a source *becomes* active, and flipping a switch doesn't change which that is —
+    /// so the setting never arrived and every command kept going out to Connect and failing.
+    func testTogglingOfflineModeTakesEffectWithoutChangingSource() async {
+        let remote = FakeSpotifyPlayback()
+        remote.state = playingState()
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.setSpotifyOfflineMode(true)
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertTrue(remote.playRequests.isEmpty, "Connect should already be switched off")
+        XCTAssertFalse(remote.localPlayRequests.isEmpty)
+    }
+
+    // MARK: - Offering offline mode when authorization fails
+
+    /// "Spotify needs authorizing again" is what losing the connection looks like from the
+    /// player's side — authorizing goes over the network — so the remedy it names is one the
+    /// user cannot reach. Offline mode is what would work, so it is offered.
+    func testAnAuthorizationFailureOffersOfflineMode() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.notSignedIn
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertTrue(manager.isSuggestingSpotifyOfflineMode)
+    }
+
+    /// Not for failures offline mode doesn't answer. A refused command is a different problem,
+    /// and offering offline mode for it would be noise.
+    func testOtherFailuresDoNotOfferOfflineMode() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.actionNotAllowed("Restriction violated")
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertFalse(manager.isSuggestingSpotifyOfflineMode)
+    }
+
+    /// And never when it is already on — there would be nothing to offer.
+    func testNoOfferWhenOfflineModeIsAlreadyOn() async {
+        let remote = FakeSpotifyPlayback()
+        remote.localPlayError = SpotifyError.notSignedIn
+        let manager = makeManager(remote)
+        let source = offlineSpotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertFalse(manager.isSuggestingSpotifyOfflineMode)
+    }
+
+    /// Dismissing clears it, so the alert doesn't come back on the next redraw.
+    func testDismissingTheOfferClearsIt() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.permissionsMissing
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+        XCTAssertTrue(manager.isSuggestingSpotifyOfflineMode)
+
+        manager.dismissSpotifyOfflineModeSuggestion()
+        XCTAssertFalse(manager.isSuggestingSpotifyOfflineMode)
+    }
+
+    // MARK: - When Connect has nowhere to play at all
+
+    /// Connect reporting no reachable device is not a dead end on this phone: the Spotify app can
+    /// be launched and told to play, which is the one thing Connect cannot do. This used to
+    /// report the error and give up while a perfectly good player sat on the same device.
+    func testNoReachableDeviceFallsBackToTheSpotifyAppOnThisPhone() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.noActiveDevice
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source), song("t2", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertEqual(remote.localPlayRequests.last?.ids, ["t1", "t2"],
+                       "the queue should be handed to the Spotify app rather than abandoned")
+    }
+
+    /// Devices Spotify won't let the Web API drive are the same situation wearing a different
+    /// error, and get the same answer.
+    func testOnlyRestrictedDevicesAlsoFallsBackToTheSpotifyApp() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.onlyRestrictedDevices
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertFalse(remote.localPlayRequests.isEmpty)
+    }
+
+    /// With no Spotify app here either, the original complaint stands — and it names the remedy
+    /// rather than reporting some inner failure of the fallback.
+    func testNoDeviceAndNoLocalSpotifyReportsTheOriginalProblem() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.noActiveDevice
+        remote.localPlayError = SpotifyAppRemoteError.spotifyNotInstalled
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertTrue(
+            manager.playbackErrorMessage?.contains("no device available") == true,
+            "got: \(manager.playbackErrorMessage ?? "nil")"
+        )
+    }
+
+    /// A refusal that is *about the command* still stands. Only "nowhere to play" is worth
+    /// taking to the local app; retrying everything there would hide real errors.
+    func testACommandRefusalIsStillReported() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.actionNotAllowed("Restriction violated")
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertTrue(remote.localPlayRequests.isEmpty, "not every refusal means launching Spotify")
+        XCTAssertNotNil(manager.playbackErrorMessage)
     }
 
     // MARK: - Switching back to this phone

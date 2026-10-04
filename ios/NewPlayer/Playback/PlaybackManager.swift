@@ -52,6 +52,21 @@ final class PlaybackManager {
     /// active to control", which otherwise looks like the buttons simply not working.
     private(set) var playbackErrorMessage: String?
 
+    /// Set when a Spotify play failed for want of authorization, and offline mode would not have
+    /// needed it.
+    ///
+    /// Worth offering rather than just reporting, because the two are the same situation seen
+    /// from different ends: authorizing goes over the network, so "Spotify needs authorizing
+    /// again" is what losing the connection looks like from here. Offline mode hands the track
+    /// to the Spotify app with a deep link, which needs no permission — so the error names a
+    /// remedy the user cannot reach, while the thing that would work sits behind a switch they
+    /// have no reason to connect with it.
+    private(set) var isSuggestingSpotifyOfflineMode = false
+
+    func dismissSpotifyOfflineModeSuggestion() {
+        isSuggestingSpotifyOfflineMode = false
+    }
+
     @ObservationIgnored
     let player = AVPlayer()
 
@@ -80,6 +95,15 @@ final class PlaybackManager {
     private var spotifyPollTask: Task<Void, Never>?
     @ObservationIgnored
     private var isSpotifyMode = false
+    /// Whether to skip Spotify Connect entirely and drive the Spotify app on this phone.
+    ///
+    /// Connect is a web service: with no network every command waits out its timeout before
+    /// failing, so a play took the better part of a minute to reach the fallback that was always
+    /// going to handle it. The state poll is no better off — it can only report what it cannot
+    /// reach. In offline mode both are skipped and playback goes straight to the Spotify app,
+    /// which is a local connection and needs no network at all.
+    @ObservationIgnored
+    private var isSpotifyOfflineMode = false
     /// Which source is loaded, so a repeated call for the same one can be recognised.
     @ObservationIgnored
     private var activeSourceID: PersistentIdentifier?
@@ -388,14 +412,18 @@ final class PlaybackManager {
         spotifyPollTask?.cancel()
         spotifyPollTask = nil
         isSpotifyMode = false
+        isSpotifyOfflineMode = false
         playbackErrorMessage = nil
         spotifyQueue = []
 
         if let source, source.kind == .spotify {
             isSpotifyMode = true
+            isSpotifyOfflineMode = source.isOfflineMode
             spotify.configure(clientID: source.spotifyClientID)
             spotify.selectDevice(id: source.spotifyDeviceID)
-            startSpotifyPolling()
+            // No poll offline: it asks Spotify's servers what is playing, which is exactly what
+            // cannot be reached. The local clock still advances, so the player keeps time.
+            if !isSpotifyOfflineMode { startSpotifyPolling() }
             return
         }
 
@@ -505,6 +533,27 @@ final class PlaybackManager {
     /// The queue and the playing track are carried across rather than discarded: a Connect
     /// transfer moves the session — track, position and all — to the new device, which is what
     /// the endpoint exists for. Stopping and clearing first bought nothing.
+    /// Switches offline mode on or off while a Spotify source stays active.
+    ///
+    /// Needed because the flag is otherwise only read in `setActiveSource`, which runs when the
+    /// *source* changes — and flipping the switch mutates the source without changing which one
+    /// is active. So the setting never reached here, and every command kept going out to Connect
+    /// and failing: `404 Device not found`, `0 device(s)`, over and over.
+    func setSpotifyOfflineMode(_ isOn: Bool) {
+        guard isSpotifyOfflineMode != isOn else { return }
+        isSpotifyOfflineMode = isOn
+        guard isSpotifyMode else { return }
+
+        if isOn {
+            // The poll can only ask Spotify's servers what is playing, which is the one thing
+            // that cannot be reached.
+            spotifyPollTask?.cancel()
+            spotifyPollTask = nil
+        } else {
+            startSpotifyPolling()
+        }
+    }
+
     func selectSpotifyDevice(id: String?) {
         playbackErrorMessage = nil
         guard isSpotifyMode else {
@@ -559,7 +608,11 @@ final class PlaybackManager {
             let startIndex = currentIndex ?? 0
             do {
                 print("PlaybackManager: transfer to this phone didn't land — driving the Spotify app directly")
-                try await spotify.playOnLocalApp(trackIDs: ids, startAt: startIndex)
+                try await spotify.playOnLocalApp(
+                    trackIDs: ids,
+                    startAt: startIndex,
+                    canUseConnection: !isSpotifyOfflineMode
+                )
                 showQueueHandedToLocalSpotify(trackIDs: ids, startAt: startIndex)
                 playbackErrorMessage = nil
                 await confirmSpotifyState()
@@ -578,7 +631,23 @@ final class PlaybackManager {
     /// Reports a refused command and undoes the optimistic state that went with it — otherwise
     /// the UI keeps claiming to play something that never started.
     private func reportSpotifyFailure(_ error: Error) {
-        playbackErrorMessage = (error as? SpotifyError)?.errorDescription ?? error.localizedDescription
+        reportSpotifyFailure(message: (error as? SpotifyError)?.errorDescription ?? error.localizedDescription)
+        // Only worth offering when it isn't already on, and only for the failures offline mode
+        // actually answers. A refused command or an unreachable device is a different problem,
+        // and offering offline mode for those would be noise.
+        if !isSpotifyOfflineMode, Self.isSpotifyAuthorizationFailure(error) {
+            isSuggestingSpotifyOfflineMode = true
+        }
+    }
+
+    /// Reports a failure in this app's own words, and undoes the optimistic playing state that
+    /// went with the attempt.
+    ///
+    /// The state reset is the point. The fallback's own failures set a message and nothing else,
+    /// so when Connect refused *and* the Spotify app couldn't be used, the player went on
+    /// claiming to play something that never started.
+    private func reportSpotifyFailure(message: String) {
+        playbackErrorMessage = message
         isPlaying = false
         syncRemoteClock()
         updateNowPlayingPlaybackState()
@@ -663,10 +732,24 @@ final class PlaybackManager {
             // which switches the queue mirror off for the rest of the session, on every
             // device, not just the one that failed.
             defer { self.isSpotifyPlayInFlight = false }
+
+            // Connect is a web service, so with no network every command waits out its timeout
+            // before failing through to the fallback that was always going to handle it. Offline
+            // mode skips straight past, which is the whole point of the setting.
+            if self.isSpotifyOfflineMode {
+                await self.driveLocalSpotify(trackIDs: trackIDs, startAt: 0)
+                return
+            }
             self.logAudioSessionState("before play")
             do {
                 try await self.spotify.play(trackIDs: trackIDs, startAt: 0)
                 self.playbackErrorMessage = nil
+            } catch where Self.meansConnectHasNowhereToPlay(error) {
+                // Connect found no device it can drive. Reporting that gave up while a perfectly
+                // good player sat on this very phone — so the Spotify app is launched and told
+                // to play instead, which is the one thing Connect cannot do.
+                await self.driveLocalSpotify(trackIDs: trackIDs, startAt: 0)
+                return
             } catch {
                 self.reportSpotifyFailure(error)
                 return
@@ -757,6 +840,11 @@ final class PlaybackManager {
     ///
     /// So: App Remote starts it, the Web API queues behind it.
     private func buildSpotifyQueueBehindTheCurrentTrack(trackIDs: [String], startAt index: Int) async {
+        // Not offline: this builds the queue over the Web API, which is the one thing that
+        // cannot be reached. The Spotify app plays the track it was handed either way; only the
+        // tracks behind it are lost, and waiting out a timeout each would be worse.
+        guard !isSpotifyOfflineMode else { return }
+
         let start = min(max(index, 0), max(trackIDs.count - 1, 0))
         let remainder = Array(trackIDs[start...].dropFirst().prefix(Self.maximumSpotifyQueueAdds))
         guard !remainder.isEmpty else { return }
@@ -784,6 +872,8 @@ final class PlaybackManager {
 
     /// Called only after App Remote has actually played, which is what makes the answer true.
     private func learnLocalSpotifyDeviceID() {
+        // Reads /me/player, so there is nothing to learn offline.
+        guard !isSpotifyOfflineMode else { return }
         Task { [weak self] in
             guard let self,
                   let state = try? await self.spotify.playerState(),
@@ -797,22 +887,56 @@ final class PlaybackManager {
 
     private func recoverOnLocalSpotifyIfNotPlaying(trackIDs: [String], startAt index: Int) async {
         guard isSpotifyMode, !isPlaying, !trackIDs.isEmpty else { return }
+        await driveLocalSpotify(trackIDs: trackIDs, startAt: index)
+    }
+
+    /// Whether Spotify refused for want of authorization.
+    ///
+    /// Both of these mean the stored token cannot be used and cannot be renewed without the
+    /// network — which is exactly what a lost connection produces.
+    static func isSpotifyAuthorizationFailure(_ error: Error) -> Bool {
+        switch error as? SpotifyError {
+        case .notSignedIn, .permissionsMissing: true
+        default: false
+        }
+    }
+
+    /// Whether Connect has reported that it has nowhere to play at all.
+    ///
+    /// Distinct from a command being refused by a device: these mean Spotify could find no
+    /// device it is able to drive. On this phone that is not the dead end it looks like — the
+    /// Spotify app can be launched and told to play, which is the one thing Connect cannot do.
+    static func meansConnectHasNowhereToPlay(_ error: Error) -> Bool {
+        switch error as? SpotifyError {
+        case .noActiveDevice, .onlyRestrictedDevices: true
+        default: false
+        }
+    }
+
+    /// Plays on the Spotify app on this phone, launching it if need be.
+    private func driveLocalSpotify(trackIDs: [String], startAt index: Int) async {
+        guard isSpotifyMode, !trackIDs.isEmpty else { return }
 
         do {
-            print("PlaybackManager: Connect didn't start playback — driving the Spotify app directly")
-            try await spotify.playOnLocalApp(trackIDs: trackIDs, startAt: index)
+            print("PlaybackManager: driving the Spotify app on this phone directly")
+            // Offline there is no point waiting for the handshake: Spotify cannot complete
+            // authorization without the network, so the wait only delays the UI by its timeout.
+            try await spotify.playOnLocalApp(
+                trackIDs: trackIDs,
+                startAt: index,
+                canUseConnection: !isSpotifyOfflineMode
+            )
             playbackErrorMessage = nil
             showQueueHandedToLocalSpotify(trackIDs: trackIDs, startAt: index)
             await confirmSpotifyState()
             learnLocalSpotifyDeviceID()
             await buildSpotifyQueueBehindTheCurrentTrack(trackIDs: trackIDs, startAt: index)
         } catch SpotifyAppRemoteError.spotifyNotInstalled {
-            // The target was something other than this phone, and there is no local Spotify to
-            // fall back on.
-            playbackErrorMessage = "Spotify didn't start playing. Open Spotify on that device and try again."
+            // Nothing on this phone to fall back on either, so the original complaint stands.
+            reportSpotifyFailure(message: "Spotify has no device available to play on. Open the Spotify app on this phone, then try again.")
         } catch {
             print("PlaybackManager: the Spotify app wouldn't play either — \(error)")
-            playbackErrorMessage = "Couldn't start playback in the Spotify app. Open it and try again."
+            reportSpotifyFailure(message: "Couldn't start playback in the Spotify app. Open it and try again.")
         }
     }
 
@@ -847,6 +971,13 @@ final class PlaybackManager {
     /// result. Without the read-back the app would sit on a stale track for a whole poll
     /// interval; without dropping the prediction it would show a wrong one.
     private func skipSpotify(_ body: @escaping (SpotifyPlaybackControlling) async throws -> Void) {
+        // Offline there is nothing to drive: the track was handed to Spotify with a deep link,
+        // and every transport command goes out over the Web API. Sending them anyway just waits
+        // out timeouts and reports failures the user can do nothing about.
+        guard !isSpotifyOfflineMode else {
+            playbackErrorMessage = "Offline mode hands tracks to the Spotify app — use its own controls to skip."
+            return
+        }
         currentTime = 0
         remoteTimeAnchor = (elapsed: 0, at: Date())
         Task { [weak self] in
@@ -867,6 +998,10 @@ final class PlaybackManager {
     /// nothing before it. A refusal there is not an error to report: restarting the track is what
     /// the button is for.
     private func skipSpotifyBack() {
+        guard !isSpotifyOfflineMode else {
+            playbackErrorMessage = "Offline mode hands tracks to the Spotify app — use its own controls to skip."
+            return
+        }
         currentTime = 0
         remoteTimeAnchor = (elapsed: 0, at: Date())
         Task { [weak self] in
@@ -937,6 +1072,8 @@ final class PlaybackManager {
     /// silently does nothing. "No active device" is the common one and is not a fault: Spotify
     /// only accepts commands when one of its clients is running.
     private func performSpotifyCommand(_ body: @escaping (SpotifyPlaybackControlling) async throws -> Void) {
+        // Same reasoning as the skips: offline these reach a service that cannot be reached.
+        guard !isSpotifyOfflineMode else { return }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -979,7 +1116,9 @@ final class PlaybackManager {
     /// Follows the active Spotify client, so the app reflects changes made from Spotify itself
     /// or another device. Same shape as the MPD poll, and it re-anchors the same local clock.
     private func pollSpotifyState() async {
-        guard isSpotifyMode else { return }
+        // Guarded here rather than at each caller: this asks Spotify's servers what is playing,
+        // and offline there is nothing to ask. The player keeps time from the local clock.
+        guard isSpotifyMode, !isSpotifyOfflineMode else { return }
         guard let state = try? await spotify.playerState() else { return }
         await applySpotifyState(state)
 
@@ -1032,6 +1171,9 @@ final class PlaybackManager {
     /// the queue is made of the same Song rows the rest of the app browses, and something queued
     /// from a search was never imported. Those are skipped rather than faked.
     private func mirrorSpotifyQueue() async {
+        // Offline the queue on screen is the one this app handed over; Spotify's own account of
+        // it comes from a server that cannot be reached.
+        guard !isSpotifyOfflineMode else { return }
         guard isSpotifyMode, let snapshot = try? await spotify.playbackQueue() else { return }
 
         // Kept whole, whether or not the tracks are in the library — this is what the Queue
@@ -1091,10 +1233,21 @@ final class PlaybackManager {
         //
         // Nothing is lost by keeping the old rows: the Queue screen reads `spotifyQueue` in
         // Spotify mode, which has already been updated from Spotify's own entries above.
+        // Only ever replaced, never emptied.
+        //
+        // `songResolver` maps Spotify's ids back to library rows, and Spotify's queue routinely
+        // holds tracks this app never imported — anything queued from a search, or a context
+        // outside the saved library. Those resolve to nothing. An empty queue means `currentSong`
+        // is nil, which is the mini player vanishing mid-track with the artwork and the track
+        // details going with it, and that happened two ways: a read that resolved to nothing, and
+        // an empty read believed after the in-flight flag had already been cleared by the poll
+        // this confirm restarts.
+        //
+        // Nothing needs the clear. The Queue screen reads `spotifyQueue`, updated above from
+        // Spotify's own entries, so an emptied Spotify queue still shows as empty there. Keeping
+        // the library rows only means the player still knows what it is playing.
         let mirroredIDs = mirrored.map(\.relativePath)
-        if mirrored.isEmpty, snapshot.entries.isEmpty {
-            if !queue.isEmpty { setQueue([]) }
-        } else if !mirrored.isEmpty, queue.map(\.relativePath) != mirroredIDs {
+        if !mirrored.isEmpty, queue.map(\.relativePath) != mirroredIDs {
             setQueue(mirrored)
         }
         // Spotify's queue starts at what is playing, so that is index 0 of the mirror.
@@ -1132,6 +1285,9 @@ final class PlaybackManager {
         } else {
             remoteKeepAlive.stop()
         }
+        // Covers and playback share the server. Told here rather than inferred, so covers slow
+        // down while it is busy and pick up again the moment it isn't.
+        MPDArtworkFetcher.shared.setPlaybackActive(isRemoteMode && isPlaying)
     }
 
     private func startStatusPolling() {
@@ -1211,6 +1367,11 @@ final class PlaybackManager {
             consecutivePollFailures += 1
             if consecutivePollFailures >= 2 {
                 print("PlaybackManager: MPD status poll failed \(consecutivePollFailures)x — rebuilding the connection")
+                // Covers are almost certainly why. They run on their own connection but not on
+                // their own server, and a host pulling a multi-megabyte image in twenty-odd
+                // round trips has nothing left to answer a poll with. Music stuttering matters
+                // more than a cover arriving a second later.
+                MPDArtworkFetcher.shared.yieldToPlayback()
                 statusPollTask?.cancel()
                 statusPollTask = nil
                 Task { await mpdClient.disconnect() }
@@ -1303,10 +1464,22 @@ final class PlaybackManager {
                 // which switches the queue mirror off for the rest of the session, on every
                 // device, not just the one that failed.
                 defer { self.isSpotifyPlayInFlight = false }
+
+                // Offline: straight to the Spotify app, rather than waiting out Connect's
+                // timeouts on the way to the same place.
+                if self.isSpotifyOfflineMode {
+                    await self.driveLocalSpotify(trackIDs: ids, startAt: index)
+                    return
+                }
                 self.logAudioSessionState("before play")
                 do {
                     try await self.spotify.play(trackIDs: ids, startAt: index)
                     self.playbackErrorMessage = nil
+                } catch where Self.meansConnectHasNowhereToPlay(error) {
+                    // Connect found no device it can drive. Reporting that gave up while a
+                    // perfectly good player sat on this very phone.
+                    await self.driveLocalSpotify(trackIDs: ids, startAt: index)
+                    return
                 } catch {
                     self.reportSpotifyFailure(error)
                     return
@@ -1355,7 +1528,6 @@ final class PlaybackManager {
         setQueue(queue + [song])
         setCurrentIndex(queue.count - 1)
         if route(for: song) == .spotify {
-            let trackID = song.relativePath
             // Spotify's queue is replaced by the app's, deliberately: the app's queue is the
             // queue, and it is re-sent from the new track onward.
             let ids = queue.map(\.relativePath)
@@ -1371,10 +1543,20 @@ final class PlaybackManager {
                 // which switches the queue mirror off for the rest of the session, on every
                 // device, not just the one that failed.
                 defer { self.isSpotifyPlayInFlight = false }
+
+                // Offline: straight to the Spotify app, rather than waiting out Connect's
+                // timeouts on the way to the same place.
+                if self.isSpotifyOfflineMode {
+                    await self.driveLocalSpotify(trackIDs: ids, startAt: startIndex)
+                    return
+                }
                 self.logAudioSessionState("before play")
                 do {
                     try await self.spotify.play(trackIDs: ids, startAt: startIndex)
                     self.playbackErrorMessage = nil
+                } catch where Self.meansConnectHasNowhereToPlay(error) {
+                    await self.driveLocalSpotify(trackIDs: ids, startAt: startIndex)
+                    return
                 } catch {
                     self.reportSpotifyFailure(error)
                     return

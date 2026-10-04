@@ -70,9 +70,14 @@ final class SpotifyPlaybackTests: XCTestCase {
 
     /// The reason this exists: Spotify only accepts commands while one of its clients is
     /// running, and a silent no-op looks exactly like a broken button.
-    func testNoActiveDeviceIsReportedRatherThanIgnored() async throws {
+    /// "No active device" is no longer a dead end on a phone that has Spotify: the app is
+    /// launched and told to play instead, which is covered in `SpotifyLocalPlaybackTests`. It
+    /// stands as a reported refusal only when there is no local Spotify to fall back on — and
+    /// then the UI must not claim to be playing.
+    func testNoActiveDeviceIsReportedWhenThereIsNoLocalSpotifyEither() async throws {
         let remote = FakeSpotifyPlayback()
         remote.errorToThrow = SpotifyError.noActiveDevice
+        remote.localPlayError = SpotifyAppRemoteError.spotifyNotInstalled
         let manager = PlaybackManager(spotify: remote)
         let source = spotifySource()
         manager.setActiveSource(source)

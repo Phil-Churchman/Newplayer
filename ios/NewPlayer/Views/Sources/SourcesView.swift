@@ -265,6 +265,25 @@ struct SourcesView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    // Plays through the Spotify app on this phone instead of over Connect,
+                    // and stops polling Spotify's servers. The library itself is already local,
+                    // so browsing works offline either way.
+                    Toggle("Offline mode", isOn: Binding(
+                        get: { spotifySource.isOfflineMode },
+                        set: { isOn in
+                            viewModel.setSpotifyOfflineMode(isOn, source: spotifySource, modelContext: modelContext)
+                            // Told directly, the same way the device picker is: the player reads
+                            // this when a source becomes active, and toggling a switch doesn't
+                            // change which source that is.
+                            playback.setSpotifyOfflineMode(isOn)
+                        }
+                    ))
+                    if spotifySource.isOfflineMode {
+                        Text("Opens the Spotify app at the track you pick, which plays it if it's downloaded. Spotify won't accept remote control without a network, so New player can't run the queue or the transport while offline.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     // Shown only when the stored token can no longer do what playback needs.
                     // Signing in again is the only fix — a refresh cannot widen a token — and
                     // without this the only route to one was Sign Out and start over.

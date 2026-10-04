@@ -149,6 +149,25 @@ final class SourcesViewModel: ObservableObject {
 
     /// Asks Spotify which devices are available. Deliberately non-interactive: this runs when the
     /// Sources screen appears, and a screen appearing must never throw up a sign-in page.
+    /// Turns "downloaded only" on or off, and when turning it on, asks the Spotify app what it
+    /// actually holds.
+    ///
+    /// The check goes to the Spotify app over App Remote's local socket, not to Spotify's
+    /// servers — the Web API has no notion of a downloaded track — so it works with no internet.
+    /// It does need the Spotify app installed and reachable, which is the one thing that can
+    /// make this fail while offline.
+    /// Turns offline mode on or off for a Spotify source.
+    ///
+    /// Nothing is asked of Spotify: there is nothing to ask. Spotify exposes no way for another
+    /// app to enumerate what it has downloaded — the Web API has no notion of it, and App Remote
+    /// will only report it for content it is handed one item at a time, over a connection that
+    /// exists for a moment after a launch. So this does not try to pre-filter the library; it
+    /// changes how playback is addressed, which is the part that actually works offline.
+    func setSpotifyOfflineMode(_ isOn: Bool, source: Source, modelContext: ModelContext) {
+        source.isOfflineMode = isOn
+        try? modelContext.save()
+    }
+
     func loadSpotifyDevices(source: Source) {
         guard !isLoadingSpotifyDevices, !source.spotifyClientID.isEmpty else { return }
         isLoadingSpotifyDevices = true

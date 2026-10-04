@@ -38,10 +38,22 @@ protocol SpotifyAppRemoteControlling: AnyObject {
     /// Starts playback of `trackIDs[index]` on the Spotify app on this phone, launching it if it
     /// isn't running.
     ///
+    /// `canUseConnection` says whether App Remote's own connection is worth anything right now.
+    /// Offline it is not: authentication goes over the network, so connecting fails with
+    /// `wamp.error.authorization_failed` and waiting for a post-launch handshake times out. With
+    /// it false, Spotify is simply launched with the track — which does work offline, because
+    /// launching is a URL open and playing a downloaded track needs nobody's permission.
+    ///
     /// Starting playback is *all* this does. It cannot build a queue: App Remote's enqueue
     /// reports success for every track and Spotify keeps only one, so the tracks that follow are
     /// lined up over the Web API instead, once this has got something playing.
-    func play(trackIDs: [String], startAt index: Int, clientID: String, accessToken: String) async throws
+    func play(
+        trackIDs: [String],
+        startAt index: Int,
+        clientID: String,
+        accessToken: String,
+        canUseConnection: Bool
+    ) async throws
     /// Handles the callback Spotify sends back after a launch. Returns whether the URL was ours.
     @discardableResult
     func handleCallback(_ url: URL) -> Bool
@@ -78,7 +90,13 @@ final class SpotifyAppRemote: NSObject, SpotifyAppRemoteControlling {
         return UIApplication.shared.canOpenURL(url)
     }
 
-    func play(trackIDs: [String], startAt index: Int, clientID: String, accessToken: String) async throws {
+    func play(
+        trackIDs: [String],
+        startAt index: Int,
+        clientID: String,
+        accessToken: String,
+        canUseConnection: Bool = true
+    ) async throws {
         guard isSpotifyInstalled else { throw SpotifyAppRemoteError.spotifyNotInstalled }
         guard !trackIDs.isEmpty else { return }
 
@@ -89,7 +107,29 @@ final class SpotifyAppRemote: NSObject, SpotifyAppRemoteControlling {
         let remote = remote(for: clientID)
         remote.connectionParameters.accessToken = accessToken
 
+        // A live connection is always worth using. Establishing one is only worth attempting
+        // when it can succeed.
         if !remote.isConnected {
+            guard canUseConnection else {
+                // A plain deep link, not App Remote.
+                //
+                // Every App Remote entry point authenticates over the network, so offline all of
+                // them fail: `connect()` returns `wamp.error.authorization_failed`, and
+                // `authorizeAndPlayURI` — despite the name suggesting it just plays something —
+                // makes Spotify itself report "No network connectivity". Opening a track URL
+                // asks Spotify for no permission at all, so it is the one thing that still
+                // works: Spotify opens at the track and plays it if it holds a download.
+                //
+                // The cost is that this is a handover, not a command. Nothing can be told to
+                // Spotify afterwards, and nothing can be read back.
+                print("SpotifyAppRemote: offline — opening Spotify at \(first)")
+                guard let url = URL(string: "spotify:track:\(first)"),
+                      await UIApplication.shared.open(url)
+                else {
+                    throw SpotifyAppRemoteError.couldNotConnect("Spotify wouldn't open")
+                }
+                return
+            }
             do {
                 try await connect(remote)
                 print("SpotifyAppRemote: connected to the running Spotify app")

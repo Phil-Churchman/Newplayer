@@ -28,6 +28,30 @@ struct RootView: View {
             .task {
                 await autoScanIfNeeded()
             }
+            // Offered here rather than reported as an error, because authorizing goes over the
+            // network: "Spotify needs authorizing again" is what losing the connection looks
+            // like from the player's side, and the remedy it names is one the user can't reach
+            // without a connection. Offline mode is what would work.
+            .alert(
+                "Spotify can't be authorized",
+                isPresented: Binding(
+                    get: { playback.isSuggestingSpotifyOfflineMode },
+                    set: { if !$0 { playback.dismissSpotifyOfflineModeSuggestion() } }
+                )
+            ) {
+                Button("Use offline mode") {
+                    playback.dismissSpotifyOfflineModeSuggestion()
+                    guard let source = activeSource else { return }
+                    source.isOfflineMode = true
+                    try? modelContext.save()
+                    playback.setSpotifyOfflineMode(true)
+                }
+                Button("Not now", role: .cancel) {
+                    playback.dismissSpotifyOfflineModeSuggestion()
+                }
+            } message: {
+                Text("That usually means there's no connection. Offline mode hands tracks to the Spotify app instead, which plays whatever it has downloaded — no authorization needed.")
+            }
             .onAppear {
                 playback.setActiveSource(activeSource, resolveSong: makeSongResolver(for: activeSource))
             }

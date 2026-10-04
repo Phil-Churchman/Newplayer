@@ -257,7 +257,12 @@ final class FakeSpotifyPlayback: SpotifyPlaybackControlling {
     var localPlayError: Error?
     private(set) var localPlayRequests: [(ids: [String], index: Int)] = []
 
-    func playOnLocalApp(trackIDs: [String], startAt index: Int) async throws {
+    /// Whether each handover said App Remote's connection was usable — false offline, where
+    /// both connecting and authorizing go over the network.
+    private(set) var localPlayUsedConnection: [Bool] = []
+
+    func playOnLocalApp(trackIDs: [String], startAt index: Int, canUseConnection: Bool) async throws {
+        localPlayUsedConnection.append(canUseConnection)
         localPlayRequests.append((trackIDs, index))
         record("playOnLocalApp:\(trackIDs.count)@\(index)")
         if let localPlayError { throw localPlayError }

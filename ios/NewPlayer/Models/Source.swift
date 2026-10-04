@@ -32,6 +32,13 @@ final class Source {
     /// The Connect device the user picked to play on. Nil means "whichever one is available",
     /// which is what the app works out for itself.
     var spotifyDeviceID: String?
+    /// Drives Spotify without the network: commands go straight to the Spotify app on this
+    /// phone instead of out to Spotify Connect, and the state poll stops.
+    ///
+    /// Deliberate rather than inferred from reachability. "Online" is not the same question as
+    /// "will Spotify play this", and a flaky connection flipping the app's behaviour unasked is
+    /// worse than being told.
+    var isOfflineMode: Bool = false
 
     @Relationship(deleteRule: .cascade, inverse: \Artist.source)
     var artists: [Artist] = []

@@ -88,6 +88,17 @@ actor MockMPDClient: MPDClientProtocol {
 
     func disconnect() async {
         calls.append(.disconnect)
+        // Widens the teardown window so a test can slip a request into it, which is where the
+        // artwork queue could strand one.
+        if disconnectDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: disconnectDelayNanoseconds)
+        }
+    }
+
+    private var disconnectDelayNanoseconds: UInt64 = 0
+
+    func setDisconnectDelay(nanoseconds: UInt64) {
+        disconnectDelayNanoseconds = nanoseconds
     }
 
     private(set) var statusFetchCount = 0

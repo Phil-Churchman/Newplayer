@@ -12,6 +12,16 @@ final class SpotifyPlaybackTests: XCTestCase {
         return source
     }
 
+    /// A source with a device chosen in Sources, so Spotify Connect carries the playback.
+    ///
+    /// Without a pin the app brings playback to this phone first — right in use, wrong for a test
+    /// about how Connect behaves, because Connect would never be reached.
+    private func connectSpotifySource() -> Source {
+        let source = spotifySource()
+        source.spotifyDeviceID = "a-device-the-user-chose"
+        return source
+    }
+
     private func song(_ id: String, source: Source) -> Song {
         Song(title: id, artist: "A", albumTitle: "Al", albumArtist: "A",
              track: 1, duration: 200, relativePath: id, source: source)
@@ -33,7 +43,7 @@ final class SpotifyPlaybackTests: XCTestCase {
     func testPlayingAnAlbumSendsTheTracksAndTheStartingPosition() async {
         let remote = FakeSpotifyPlayback()
         let manager = PlaybackManager(spotify: remote)
-        let source = spotifySource()
+        let source = connectSpotifySource()
         manager.setActiveSource(source)
 
         manager.play(songs: [song("t1", source: source), song("t2", source: source)], startAt: 1)
@@ -47,7 +57,7 @@ final class SpotifyPlaybackTests: XCTestCase {
     func testTransportCommandsGoToSpotify() async {
         let remote = FakeSpotifyPlayback()
         let manager = PlaybackManager(spotify: remote)
-        let source = spotifySource()
+        let source = connectSpotifySource()
         manager.setActiveSource(source)
         manager.play(songs: [song("t1", source: source), song("t2", source: source)], startAt: 0)
         await settle()
@@ -364,7 +374,9 @@ final class SpotifyPlaybackTests: XCTestCase {
         remote.state = SpotifyPlayerState(isPlaying: true, progressSeconds: 0, durationSeconds: 200, trackID: "t1")
         remote.queueSnapshot = SpotifyQueueSnapshot(currentTrackID: "t1", entries: [SpotifyQueueEntry(trackID: "t1", title: "t1", artist: "A", artworkURL: nil, position: 0)])
 
-        let source = spotifySource()
+        // Pinned: this is about the poll reading both, and activating this phone on entering
+        // the mode adds a state read of its own that has nothing to do with polling.
+        let source = connectSpotifySource()
         let songs = [song("t1", source: source)]
         let manager = PlaybackManager(spotify: remote)
         manager.setActiveSource(source, resolveSong: { id in songs.first { $0.relativePath == id } })
@@ -582,7 +594,7 @@ final class SpotifyPlaybackTests: XCTestCase {
             entries: [entry("t1", position: 0), entry("unknown", position: 1)]
         )
 
-        let source = spotifySource()
+        let source = connectSpotifySource()
         let manager = PlaybackManager(spotify: remote, spotifyPollsPerQueueRead: 1)
         manager.setActiveSource(source, resolveSong: { _ in nil })
         await waitUntil { manager.spotifyQueue.count == 2 }
@@ -650,7 +662,8 @@ final class SpotifyPlaybackTests: XCTestCase {
         )
         remote.queueSnapshot = SpotifyQueueSnapshot(currentTrackID: "a1", entries: [entry("a1", position: 0)])
 
-        let source = spotifySource()
+        // Pinned: this is about which tracks are sent, not about preferring this phone.
+        let source = connectSpotifySource()
         let album = Album(name: "Record", source: source)
         let tracks = (1...4).map { number -> Song in
             let track = Song(
@@ -684,7 +697,8 @@ final class SpotifyPlaybackTests: XCTestCase {
             trackID: nil, activeDeviceID: "phone"
         )
 
-        let source = spotifySource()
+        // Pinned: this is about which tracks are sent, not about preferring this phone.
+        let source = connectSpotifySource()
         let loose = song("loose", source: source)
         let manager = PlaybackManager(spotify: remote)
         manager.setActiveSource(source)
@@ -709,7 +723,9 @@ final class SpotifyPlaybackTests: XCTestCase {
         )
 
         let manager = PlaybackManager(spotify: remote)
-        manager.setActiveSource(spotifySource(), resolveSong: { _ in nil })
+        // Pinned, so Connect carries this: the test is about which tracks are sent, not
+        // about bringing playback to this phone.
+        manager.setActiveSource(connectSpotifySource(), resolveSong: { _ in nil })
         await waitUntil { manager.spotifyQueue.count == 3 }
 
         manager.playSpotifyQueueEntry(at: 1)
@@ -729,7 +745,7 @@ final class SpotifyPlaybackTests: XCTestCase {
             currentTrackID: "a1", entries: [entry("a1", position: 0), entry("a2", position: 1)]
         )
 
-        let source = spotifySource()
+        let source = connectSpotifySource()
         let album = ["a1", "a2"].map { song($0, source: source) }
         let manager = PlaybackManager(spotify: remote)
         manager.setActiveSource(source, resolveSong: { id in album.first { $0.relativePath == id } })

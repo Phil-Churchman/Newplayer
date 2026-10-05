@@ -32,16 +32,16 @@ final class SourceVisibilityUITests: XCTestCase {
         XCTAssertTrue(tabBar.waitForExistence(timeout: 30))
         tabBar.buttons["Sources"].tap()
 
-        XCTAssertTrue(app.switches["Local Library"].waitForExistence(timeout: 5), "each source should have a switch")
+        XCTAssertTrue(app.switches["Local files"].waitForExistence(timeout: 5), "each source should have a switch")
         XCTAssertTrue(app.buttons["Choose a Different Folder"].waitForExistence(timeout: 5))
 
-        flip("Local Library", in: app)
+        flip("Local files", in: app)
 
         XCTAssertFalse(
             app.buttons["Choose a Different Folder"].waitForExistence(timeout: 2),
             "the rows below a switched-off source should be hidden"
         )
-        XCTAssertTrue(app.switches["Local Library"].exists, "the switch itself stays, so it can be turned back on")
+        XCTAssertTrue(app.switches["Local files"].exists, "the switch itself stays, so it can be turned back on")
     }
 
     func testEverySourceHasASwitch() {
@@ -50,7 +50,7 @@ final class SourceVisibilityUITests: XCTestCase {
         XCTAssertTrue(tabBar.waitForExistence(timeout: 30))
         tabBar.buttons["Sources"].tap()
 
-        for name in ["Local Library", "Music Library", "Network Host (MPD)"] {
+        for name in ["Local files", "Apple Music", "MPD"] {
             XCTAssertTrue(app.switches[name].waitForExistence(timeout: 5), "missing switch for \(name)")
         }
     }
@@ -66,7 +66,7 @@ final class SourceVisibilityUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Track 01"].waitForExistence(timeout: 10), "seeded library should show")
 
         tabBar.buttons["Sources"].tap()
-        flip("Local Library", in: app)
+        flip("Local files", in: app)
 
         for tab in ["Songs", "Artists", "Albums", "Queue"] {
             tabBar.buttons[tab].tap()

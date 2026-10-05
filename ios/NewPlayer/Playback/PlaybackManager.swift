@@ -63,6 +63,13 @@ final class PlaybackManager {
     /// have no reason to connect with it.
     private(set) var isSuggestingSpotifyOfflineMode = false
 
+    /// Bumped each time this phone has just been made Spotify's active device.
+    ///
+    /// Spotify only lists a device once something has played to it, so the phone is absent from
+    /// "Play On" until the moment below — and the Sources screen watches this so the list picks it
+    /// up instead of waiting to be opened again.
+    private(set) var localSpotifyActivations = 0
+
     func dismissSpotifyOfflineModeSuggestion() {
         isSuggestingSpotifyOfflineMode = false
     }
@@ -104,6 +111,14 @@ final class PlaybackManager {
     /// which is a local connection and needs no network at all.
     @ObservationIgnored
     private var isSpotifyOfflineMode = false
+    /// The Connect device the user chose in Sources, if any. An explicit choice outranks the
+    /// preference for this phone below.
+    @ObservationIgnored
+    private var spotifyPinnedDeviceID: String?
+    /// Where Spotify last said it was playing, so the app can tell whether this phone is already
+    /// the device in charge.
+    @ObservationIgnored
+    private var lastKnownActiveSpotifyDeviceID: String?
     /// Which source is loaded, so a repeated call for the same one can be recognised.
     @ObservationIgnored
     private var activeSourceID: PersistentIdentifier?
@@ -413,16 +428,24 @@ final class PlaybackManager {
         spotifyPollTask = nil
         isSpotifyMode = false
         isSpotifyOfflineMode = false
+        spotifyPinnedDeviceID = nil
+        lastKnownActiveSpotifyDeviceID = nil
         playbackErrorMessage = nil
         spotifyQueue = []
 
         if let source, source.kind == .spotify {
             isSpotifyMode = true
             isSpotifyOfflineMode = source.isOfflineMode
+            spotifyPinnedDeviceID = source.spotifyDeviceID
+            lastKnownActiveSpotifyDeviceID = nil
             spotify.configure(clientID: source.spotifyClientID)
             spotify.selectDevice(id: source.spotifyDeviceID)
             // No poll offline: it asks Spotify's servers what is playing, which is exactly what
             // cannot be reached. The local clock still advances, so the player keeps time.
+            // Nothing is started here. Making this phone Spotify's active device means asking
+            // the Spotify app to play something, and choosing a source is not asking for music —
+            // so the phone is preferred only once the user actually plays, in
+            // `shouldActivateLocalSpotify`.
             if !isSpotifyOfflineMode { startSpotifyPolling() }
             return
         }
@@ -562,6 +585,7 @@ final class PlaybackManager {
         }
 
         let shouldKeepPlaying = isPlaying
+        spotifyPinnedDeviceID = id
         spotify.selectDevice(id: id)
 
         guard let id else { return }
@@ -736,7 +760,10 @@ final class PlaybackManager {
             // Connect is a web service, so with no network every command waits out its timeout
             // before failing through to the fallback that was always going to handle it. Offline
             // mode skips straight past, which is the whole point of the setting.
-            if self.isSpotifyOfflineMode {
+            // Offline, or bringing playback to this phone for the first time. Either way
+            // Connect is skipped: offline it cannot work, and otherwise it would carry on
+            // playing wherever it left off — another room, typically.
+            if self.isSpotifyOfflineMode || self.shouldActivateLocalSpotify {
                 await self.driveLocalSpotify(trackIDs: trackIDs, startAt: 0)
                 return
             }
@@ -890,6 +917,26 @@ final class PlaybackManager {
         await driveLocalSpotify(trackIDs: trackIDs, startAt: index)
     }
 
+    /// Whether to bring playback to the Spotify app on this phone before doing anything else.
+    ///
+    /// Spotify Connect will happily carry on playing wherever it was last — a desktop app, a
+    /// speaker — so choosing a track here sent the music to another room. This app runs on the
+    /// phone, so the phone is where playback belongs unless told otherwise.
+    ///
+    /// Only to *activate* it. Once the local app is playing, the phone is the active Connect
+    /// device and ordinary commands reach it, so this does not fire again — which matters,
+    /// because activating means launching Spotify, and doing that for every track would be
+    /// unbearable. A device pinned in Sources is an explicit choice and wins outright.
+    private var shouldActivateLocalSpotify: Bool {
+        guard isSpotifyMode, !isSpotifyOfflineMode, spotifyPinnedDeviceID == nil else { return false }
+        guard let localID = localSpotifyDeviceID else {
+            // Never yet learned which device this phone is, so it cannot be the active one as
+            // far as this app knows. Activating teaches it.
+            return true
+        }
+        return lastKnownActiveSpotifyDeviceID != localID
+    }
+
     /// Whether Spotify refused for want of authorization.
     ///
     /// Both of these mean the stored token cannot be used and cannot be renewed without the
@@ -930,6 +977,9 @@ final class PlaybackManager {
             showQueueHandedToLocalSpotify(trackIDs: trackIDs, startAt: index)
             await confirmSpotifyState()
             learnLocalSpotifyDeviceID()
+            // Spotify has now registered this phone, so anything showing its device list is out
+            // of date.
+            localSpotifyActivations += 1
             await buildSpotifyQueueBehindTheCurrentTrack(trackIDs: trackIDs, startAt: index)
         } catch SpotifyAppRemoteError.spotifyNotInstalled {
             // Nothing on this phone to fall back on either, so the original complaint stands.
@@ -1138,6 +1188,7 @@ final class PlaybackManager {
         // exists; but ignoring it entirely left the app talking to a speaker it picked up once,
         // long after playback had moved to the phone.
         spotify.noteActiveDevice(id: state.activeDeviceID)
+        lastKnownActiveSpotifyDeviceID = state.activeDeviceID
 
         if isPlaying != state.isPlaying { isPlaying = state.isPlaying }
         remoteTimeAnchor = (elapsed: state.progressSeconds, at: Date())
@@ -1285,9 +1336,6 @@ final class PlaybackManager {
         } else {
             remoteKeepAlive.stop()
         }
-        // Covers and playback share the server. Told here rather than inferred, so covers slow
-        // down while it is busy and pick up again the moment it isn't.
-        MPDArtworkFetcher.shared.setPlaybackActive(isRemoteMode && isPlaying)
     }
 
     private func startStatusPolling() {
@@ -1367,11 +1415,6 @@ final class PlaybackManager {
             consecutivePollFailures += 1
             if consecutivePollFailures >= 2 {
                 print("PlaybackManager: MPD status poll failed \(consecutivePollFailures)x — rebuilding the connection")
-                // Covers are almost certainly why. They run on their own connection but not on
-                // their own server, and a host pulling a multi-megabyte image in twenty-odd
-                // round trips has nothing left to answer a poll with. Music stuttering matters
-                // more than a cover arriving a second later.
-                MPDArtworkFetcher.shared.yieldToPlayback()
                 statusPollTask?.cancel()
                 statusPollTask = nil
                 Task { await mpdClient.disconnect() }
@@ -1467,7 +1510,7 @@ final class PlaybackManager {
 
                 // Offline: straight to the Spotify app, rather than waiting out Connect's
                 // timeouts on the way to the same place.
-                if self.isSpotifyOfflineMode {
+                if self.isSpotifyOfflineMode || self.shouldActivateLocalSpotify {
                     await self.driveLocalSpotify(trackIDs: ids, startAt: index)
                     return
                 }
@@ -1546,7 +1589,7 @@ final class PlaybackManager {
 
                 // Offline: straight to the Spotify app, rather than waiting out Connect's
                 // timeouts on the way to the same place.
-                if self.isSpotifyOfflineMode {
+                if self.isSpotifyOfflineMode || self.shouldActivateLocalSpotify {
                     await self.driveLocalSpotify(trackIDs: ids, startAt: startIndex)
                     return
                 }

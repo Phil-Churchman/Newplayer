@@ -324,6 +324,15 @@ final class FakeSpotifyPlayback: SpotifyPlaybackControlling {
         if let trackAfterPreviousSkip { state?.trackID = trackAfterPreviousSkip }
     }
     func seek(to seconds: TimeInterval) async throws { try failIfNeeded(); record("seek") }
+    var activateLocalAppError: Error?
+    private(set) var activateLocalAppCount = 0
+
+    func activateLocalApp() async throws {
+        activateLocalAppCount += 1
+        record("activateLocalApp")
+        if let activateLocalAppError { throw activateLocalAppError }
+    }
+
     func playerState() async throws -> SpotifyPlayerState? {
         // Reads go to `events` only: `commands` is the wire-command sequence transport tests
         // assert on, and a poll running underneath them isn't part of that.
@@ -352,4 +361,23 @@ final class FakeSpotifyPlayback: SpotifyPlaybackControlling {
     private func failIfNeeded() throws {
         if let errorToThrow { throw errorToThrow }
     }
+}
+
+/// Stands in for the Spotify app on this phone.
+@MainActor
+final class FakeSpotifyAppRemote: SpotifyAppRemoteControlling {
+    var isSpotifyInstalled = true
+    var isConnected = false
+
+    var activateError: Error?
+    private(set) var activateCount = 0
+
+    func activateLocalPlayback(clientID: String, accessToken: String) async throws {
+        activateCount += 1
+        if let activateError { throw activateError }
+    }
+
+    func play(trackIDs: [String], startAt index: Int, clientID: String, accessToken: String, canUseConnection: Bool) async throws {}
+    func handleCallback(_ url: URL) -> Bool { false }
+    func disconnect() {}
 }

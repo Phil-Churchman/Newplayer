@@ -64,6 +64,9 @@ enum SpotifyError: LocalizedError, Equatable {
     case notSignedIn
     case noActiveDevice
     case permissionsMissing
+    /// Spotify has no such thing, or will not show it to this app. Carries the path, because
+    /// which one it was is the whole of the information.
+    case notFound(String)
     /// Spotify refused the action in its current state — not a permissions problem.
     case actionNotAllowed(String?)
     case onlyRestrictedDevices
@@ -95,6 +98,8 @@ enum SpotifyError: LocalizedError, Equatable {
             return "Spotify: \(reason)"
         case .permissionsMissing:
             return "Spotify refused this sign-in's permissions. Sign out and sign in again to grant playback access."
+        case .notFound(let path):
+            return "Spotify has nothing at \(path)."
         case .noActiveDevice:
             return "Spotify has no device available to play on. Open the Spotify app on this phone, then try again."
         case .rateLimited(let retryAfterSeconds):

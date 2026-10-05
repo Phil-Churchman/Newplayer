@@ -54,9 +54,11 @@ final class SpotifyQueueParsingTests: XCTestCase {
 /// Serves one canned response, so the real parsing code can be exercised without a network.
 final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var responseData = Data()
+    nonisolated(unsafe) static var statusCode = 200
 
-    static func makeSession(returning data: Data) -> URLSession {
+    static func makeSession(returning data: Data, statusCode: Int = 200) -> URLSession {
         responseData = data
+        self.statusCode = statusCode
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         return URLSession(configuration: configuration)
@@ -67,7 +69,7 @@ final class StubURLProtocol: URLProtocol {
 
     override func startLoading() {
         let response = HTTPURLResponse(
-            url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            url: request.url!, statusCode: Self.statusCode, httpVersion: nil, headerFields: nil
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Self.responseData)

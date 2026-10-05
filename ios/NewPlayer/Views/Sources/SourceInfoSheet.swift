@@ -3,15 +3,17 @@ import SwiftUI
 /// What each source is and what it can't do. Kept out of the list itself: as footers this ran to
 /// several paragraphs and pushed the controls apart, when it is only wanted the once.
 enum SourceInfoTopic: String, Identifiable {
-    case local, mediaLibrary, network, spotify
+    case local, mediaLibrary, network, spotify, mpdServerSync, spotifyOfflineMode
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .local: return "Local Library"
-        case .mediaLibrary: return "Music Library"
-        case .network: return "Network Host (MPD)"
+        case .local: return "Local files"
+        case .mediaLibrary: return "Apple Music"
+        case .network: return "MPD"
+        case .mpdServerSync: return "Sync MPD Host to Music Server"
+        case .spotifyOfflineMode: return "Spotify Offline Mode"
         case .spotify: return "Spotify"
         }
     }
@@ -39,8 +41,50 @@ enum SourceInfoTopic: String, Identifiable {
             device; this app browses its catalogue and sends it commands.
 
             The refresh icon re-fetches this app's copy of whatever the server currently has. \
-            "Sync with Music Server" instead tells the server to rescan its own music folder \
-            first, then refreshes this app's copy.
+            "Sync MPD Host to Music Server" instead tells the server to rescan its own music \
+            folder first, then refreshes this app's copy.
+            """
+        case .mpdServerSync:
+            return """
+            Tells the MPD host to rescan the music folder it is configured to serve, then copies \
+            the result into this app.
+
+            Two separate libraries are involved, which is why there are two controls. The MPD \
+            host keeps its own catalogue of the files it can see, and this app keeps a copy of \
+            that catalogue so it can be browsed quickly and offline. The refresh icon updates \
+            only this app's copy; it cannot tell the host about files the host has not noticed.
+
+            So use this after adding or removing music on the server itself — otherwise new \
+            tracks stay invisible to both, however often this app refreshes. A rescan runs on \
+            the host and can take a while on a large collection; progress is reported as the \
+            host reports it.
+            """
+        case .spotifyOfflineMode:
+            return """
+            Normally this app drives Spotify Connect, which is a web service. Commands go out to \
+            Spotify's servers and back to whichever device is playing — this phone, a desktop \
+            app, a speaker in another room. That is what lets the app run the queue, skip, \
+            pause, and follow along with whatever Spotify reports.
+
+            With no connection, none of that is reachable. Offline mode stops trying: instead of \
+            sending commands into the void and waiting for each to time out, it opens the \
+            Spotify app at the track you picked, and Spotify plays it if it holds a download.
+
+            So offline you get one track at a time. There is no queue — building one goes through \
+            the same web service — and skip and pause have to come from Spotify's own controls \
+            rather than from here. Picking a track opens Spotify each time, because there is no \
+            connection left to reuse.
+
+            Browsing is unaffected either way: the library lives on this device, so artists, \
+            albums and songs are all there with or without a connection.
+
+            One thing the app cannot do is tell you which tracks Spotify has downloaded. Spotify \
+            provides no way to ask — not over the web, and not from the app on this phone — so a \
+            track that isn't downloaded simply won't start.
+
+            It is a switch rather than something automatic on purpose. "Online" is not the same \
+            question as "will Spotify play this", and a flaky connection turning the app's \
+            behaviour over without asking is worse than leaving it to you.
             """
         case .spotify:
             return """

@@ -1,8 +1,13 @@
 import SwiftUI
 
+/// The detail under a source's switch: where it points, and how its last sync went.
+///
+/// Deliberately does not repeat the source's name or mark it active. The switch directly above
+/// this row carries the name, and a source's switch being on is what *makes* it active — so both
+/// said a second time what the line above had already said, and every stored name ("Local",
+/// "Spotify", "Music Library") was the generic one anyway.
 struct SourceRowView: View {
     let source: Source
-    let isActive: Bool
     let progress: LibrarySyncProgress?
     let onRescan: () -> Void
 
@@ -28,19 +33,6 @@ struct SourceRowView: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(source.name)
-                        .font(.headline)
-                    if isActive {
-                        Text("Active")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.accentColor.opacity(0.15))
-                            .foregroundStyle(Color.accentColor)
-                            .clipShape(Capsule())
-                    }
-                }
                 if source.kind == .network {
                     // `verbatim:` matters here — interpolating an Int into a Text string
                     // literal makes it a LocalizedStringKey, which formats numbers for the

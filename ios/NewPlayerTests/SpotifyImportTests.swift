@@ -342,6 +342,93 @@ final class SpotifyImportTests: XCTestCase {
 
     // MARK: - Device selection in Sources
 
+    /// Pressing Refresh brings this phone up so Spotify registers it — the only way it ever
+    /// appears in the list — but only when nothing else is playing. Taking the music off a
+    /// speaker because the user asked to refresh a list would be its own kind of wrong.
+    func testRefreshingDevicesBringsThisPhoneIntoTheListWhenNothingIsPlaying() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+        source.spotifyClientID = "abc"
+
+        let client = FakeSpotifyClient()
+        client.devices = [SpotifyDevice(id: "speaker", name: "Kitchen", isActive: false, isRestricted: false, type: "Speaker")]
+        let appRemote = FakeSpotifyAppRemote()
+        let viewModel = SourcesViewModel(
+            spotifyAuth: FakeSpotifyAuth(),
+            spotifyClient: client,
+            spotifyTokens: InMemorySpotifyTokenStore(tokens: SpotifyTokens(
+                accessToken: "t", refreshToken: "r",
+                expiresAt: Date().addingTimeInterval(3600),
+                scopes: SpotifyAuth.requiredScopes
+            )),
+            spotifyAppRemote: appRemote
+        )
+
+        viewModel.loadSpotifyDevices(source: source, activatingThisPhone: true)
+        await waitUntil { appRemote.activateCount > 0 }
+
+        XCTAssertEqual(appRemote.activateCount, 1)
+    }
+
+    /// Something already playing is left alone.
+    func testRefreshingDevicesLeavesAnActiveDeviceAlone() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+        source.spotifyClientID = "abc"
+
+        let client = FakeSpotifyClient()
+        client.devices = [SpotifyDevice(id: "speaker", name: "Kitchen", isActive: true, isRestricted: false, type: "Speaker")]
+        let appRemote = FakeSpotifyAppRemote()
+        let viewModel = SourcesViewModel(
+            spotifyAuth: FakeSpotifyAuth(),
+            spotifyClient: client,
+            spotifyTokens: InMemorySpotifyTokenStore(tokens: SpotifyTokens(
+                accessToken: "t", refreshToken: "r",
+                expiresAt: Date().addingTimeInterval(3600),
+                scopes: SpotifyAuth.requiredScopes
+            )),
+            spotifyAppRemote: appRemote
+        )
+
+        viewModel.loadSpotifyDevices(source: source, activatingThisPhone: true)
+        await waitUntil { !viewModel.spotifyDevices.isEmpty }
+
+        XCTAssertEqual(appRemote.activateCount, 0, "the Kitchen speaker is playing; leave it")
+    }
+
+    /// The reported bug: opening the Sources screen woke Spotify and started music, in any mode.
+    /// This screen lists a Spotify source whenever one exists rather than only when it is the
+    /// active one, so merely reading the device list must never activate anything. Activation is
+    /// for switching into Spotify mode and for Refresh Devices, and both ask for it by name.
+    func testReadingTheDeviceListDoesNotWakeSpotify() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+        source.spotifyClientID = "abc"
+
+        let client = FakeSpotifyClient()
+        client.devices = [SpotifyDevice(id: "speaker", name: "Kitchen", isActive: false, isRestricted: false, type: "Speaker")]
+        let appRemote = FakeSpotifyAppRemote()
+        let viewModel = SourcesViewModel(
+            spotifyAuth: FakeSpotifyAuth(),
+            spotifyClient: client,
+            spotifyTokens: InMemorySpotifyTokenStore(tokens: SpotifyTokens(
+                accessToken: "t", refreshToken: "r",
+                expiresAt: Date().addingTimeInterval(3600),
+                scopes: SpotifyAuth.requiredScopes
+            )),
+            spotifyAppRemote: appRemote
+        )
+
+        viewModel.loadSpotifyDevices(source: source)
+        await waitUntil { !viewModel.spotifyDevices.isEmpty }
+
+        XCTAssertEqual(appRemote.activateCount, 0, "nothing asked for this phone to be activated")
+        XCTAssertEqual(viewModel.spotifyDevices.map(\.name), ["Kitchen"], "the list still loads")
+    }
+
     func testLoadingDevicesListsWhatSpotifyCanSee() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)

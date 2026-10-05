@@ -380,7 +380,7 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
             trackID: "t1", activeDeviceID: "2b58ee7d"
         )
         let manager = makeManager(remote)
-        let source = spotifySource()
+        let source = connectSpotifySource()
         manager.setActiveSource(source)
 
         manager.play(
@@ -397,7 +397,113 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
                        "and is still there once Spotify has caught up")
     }
 
+    // MARK: - Activating this phone
+
+    /// Choosing a source is not asking for music, so nothing is started on entering the mode.
+    /// Making this phone Spotify's active device means asking the Spotify app to play something,
+    /// and that waits until the user actually plays.
+    func testEnteringSpotifyModeStartsNothing() async {
+        let remote = FakeSpotifyPlayback()
+        remote.state = playingState()
+        let manager = makeManager(remote)
+
+        manager.setActiveSource(spotifySource())
+        await settle()
+
+        XCTAssertEqual(remote.activateLocalAppCount, 0)
+        XCTAssertTrue(remote.localPlayRequests.isEmpty)
+        XCTAssertTrue(remote.playRequests.isEmpty)
+    }
+
+    /// Spotify lists a device only once something has played to it, so the phone is absent from
+    /// "Play On" until it is activated. Anything showing that list needs to know when it happens.
+    func testActivatingThisPhoneIsAnnouncedSoTheDeviceListCanCatchUp() async {
+        let remote = FakeSpotifyPlayback()
+        remote.state = ignoredState()
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        let before = manager.localSpotifyActivations
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertGreaterThan(manager.localSpotifyActivations, before)
+    }
+
+    // MARK: - Preferring this phone
+
+    /// Connect carries on playing wherever it left off — a desktop app, a speaker — so choosing a
+    /// track here sent the music to another room. This app runs on the phone, so playback is
+    /// brought here first, whatever other devices exist.
+    func testPlaybackIsBroughtToThisPhoneEvenWhenOtherDevicesExist() async {
+        let remote = FakeSpotifyPlayback()
+        // Spotify is happily playing on something else, and Connect would keep doing so.
+        remote.state = SpotifyPlayerState(
+            isPlaying: true, progressSeconds: 20, durationSeconds: 200,
+            trackID: "other", activeDeviceID: "a-speaker-in-another-room"
+        )
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertTrue(remote.playRequests.isEmpty, "Connect would have played it on the speaker")
+        XCTAssertEqual(remote.localPlayRequests.last?.ids, ["t1"])
+    }
+
+    /// Only to *activate* it. Activating means launching Spotify, so doing it for every track
+    /// would be unbearable — once the phone is the device in charge, ordinary commands reach it.
+    func testOnceThisPhoneIsPlayingConnectTakesOverAgain() async {
+        let remote = FakeSpotifyPlayback()
+        remote.state = ignoredState()          // activeDeviceID is "2b58ee7d"
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        manager.setActiveSource(source)
+
+        // First play activates the phone, which is how the app learns which device it is.
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+        XCTAssertEqual(remote.localPlayRequests.count, 1)
+
+        // Spotify now reports the phone playing, so Connect should carry the next one.
+        remote.state = playingState()
+        manager.play(songs: [song("t2", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertEqual(remote.localPlayRequests.count, 1, "Spotify must not be launched again")
+        XCTAssertFalse(remote.playRequests.isEmpty, "the second play goes over Connect")
+    }
+
+    /// A device chosen in Sources is an explicit instruction and outranks the preference.
+    func testAPinnedDeviceIsNotOverriddenByThePhonePreference() async {
+        let remote = FakeSpotifyPlayback()
+        remote.state = playingState()
+        let manager = makeManager(remote)
+        let source = spotifySource()
+        source.spotifyDeviceID = "a-speaker-the-user-chose"
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertTrue(remote.localPlayRequests.isEmpty, "the user asked for the speaker")
+        XCTAssertFalse(remote.playRequests.isEmpty)
+    }
+
     // MARK: - Offline mode
+
+    /// A source with a device chosen in Sources, so Connect carries the playback.
+    ///
+    /// Without a pin the app brings playback to this phone first, which is right in use and wrong
+    /// for a test about how Connect behaves — Connect would never be reached.
+    private func connectSpotifySource() -> Source {
+        let source = spotifySource()
+        source.spotifyDeviceID = "a-device-the-user-chose"
+        return source
+    }
 
     private func offlineSpotifySource() -> Source {
         let source = spotifySource()
@@ -527,7 +633,7 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         let remote = FakeSpotifyPlayback()
         remote.errorToThrow = SpotifyError.notSignedIn
         let manager = makeManager(remote)
-        let source = spotifySource()
+        let source = connectSpotifySource()
         manager.setActiveSource(source)
 
         manager.play(songs: [song("t1", source: source)], startAt: 0)
@@ -570,7 +676,7 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         let remote = FakeSpotifyPlayback()
         remote.errorToThrow = SpotifyError.permissionsMissing
         let manager = makeManager(remote)
-        let source = spotifySource()
+        let source = connectSpotifySource()
         manager.setActiveSource(source)
 
         manager.play(songs: [song("t1", source: source)], startAt: 0)
@@ -640,7 +746,7 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         let remote = FakeSpotifyPlayback()
         remote.errorToThrow = SpotifyError.actionNotAllowed("Restriction violated")
         let manager = makeManager(remote)
-        let source = spotifySource()
+        let source = connectSpotifySource()
         manager.setActiveSource(source)
 
         manager.play(songs: [song("t1", source: source)], startAt: 0)

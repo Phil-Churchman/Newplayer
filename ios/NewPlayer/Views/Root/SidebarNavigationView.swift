@@ -37,6 +37,7 @@ struct SidebarNavigationView: View {
     let onShowNowPlaying: () -> Void
 
     @State private var selection: LibrarySection? = .songs
+
     /// `.all` rather than `.automatic`: binding this at all makes the split view honour the
     /// value, and automatic collapses the sidebar in portrait — which is not what this layout
     /// is for. It is bound only so the bars know whether the sidebar is taking up room.

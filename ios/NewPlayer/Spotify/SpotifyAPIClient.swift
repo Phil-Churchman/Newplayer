@@ -180,7 +180,7 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
             throw SpotifyError.permissionsMissing
         }
         if http.statusCode == 403 {
-            throw SpotifyError.actionNotAllowed(Self.reason(in: data))
+            throw Self.forbidden(in: data, request: request)
         }
         guard (200..<300).contains(http.statusCode) else {
             throw SpotifyError.requestFailed("HTTP \(http.statusCode)")
@@ -371,6 +371,26 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
 
     /// Spotify explains a refusal in `error.message` — "Cannot skip to previous track" and the
     /// like. Far more use than the status code on its own.
+    /// What a 403 means. Spotify uses it for two unrelated things, and they need opposite
+    /// remedies: a token that was never granted a scope the app now uses can only be fixed by
+    /// signing in again, while everything else ("Restriction violated", "Player command failed")
+    /// is about the state of playback right now and will work on a later attempt.
+    ///
+    /// Told apart by the message, because the status code is the same for both. Reported as
+    /// `permissionsMissing` so it reaches the re-authorize paths that already exist, rather than
+    /// relaying "Insufficient client scope" to someone who cannot act on it.
+    private static func forbidden(in data: Data, request: URLRequest) -> SpotifyError {
+        let message = reason(in: data)
+        if message?.localizedCaseInsensitiveContains("scope") == true {
+            return .permissionsMissing
+        }
+        // The path is appended because Spotify's own text can be as bare as "Forbidden", and a
+        // sync touches five endpoints — without knowing which one refused, the message says
+        // only that something, somewhere, was not allowed.
+        let path = request.url?.path ?? "an unknown request"
+        return .actionNotAllowed("\(message ?? "Forbidden") (\(request.httpMethod ?? "GET") \(path))")
+    }
+
     private static func reason(in data: Data) -> String? {
         struct ErrorEnvelope: Decodable {
             struct Detail: Decodable { let message: String? }
@@ -427,7 +447,7 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
             throw SpotifyError.permissionsMissing
         }
         if http.statusCode == 403 {
-            throw SpotifyError.actionNotAllowed(Self.reason(in: data))
+            throw Self.forbidden(in: data, request: request)
         }
         guard (200..<300).contains(http.statusCode) else {
             let detail = String(data: data, encoding: .utf8) ?? ""
@@ -459,10 +479,13 @@ struct SpotifyWebAPIClient: SpotifyAPIClient {
             throw SpotifyError.permissionsMissing
         }
         if http.statusCode == 403 {
-            throw SpotifyError.actionNotAllowed(Self.reason(in: data))
+            throw Self.forbidden(in: data, request: request)
+        }
+        if http.statusCode == 404 {
+            throw SpotifyError.notFound(request.url?.path ?? "")
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw SpotifyError.requestFailed("HTTP \(http.statusCode)")
+            throw SpotifyError.requestFailed("HTTP \(http.statusCode) \(request.url?.path ?? "")")
         }
         return try JSONDecoder().decode(T.self, from: data)
     }
@@ -484,22 +507,28 @@ private struct TrackObject: Decodable {
     let name: String
     let track_number: Int?
     let duration_ms: Int?
-    let artists: [NamedObject]
-    let album: AlbumObject
+    /// Optional because not everything Spotify returns in a track-shaped slot is a track. A
+    /// podcast episode has neither an `artists` nor an `album` key — it has a `show` — and
+    /// requiring either made one such row fail the decode for a whole page of the library.
+    let artists: [NamedObject]?
+    let album: AlbumObject?
 
     var asTrack: SpotifyTrack? {
-        guard let id else { return nil } // local files in a playlist have no id
+        guard let id else { return nil } // a file Spotify holds no id for
+        // No album, or an album with no id of its own, means this is not something the library
+        // can key a song on.
+        guard let album, let albumID = album.id else { return nil }
         return SpotifyTrack(
             id: id,
             title: name,
-            artistNames: artists.map(\.name),
+            artistNames: (artists ?? []).map(\.name),
             albumName: album.name,
-            albumArtistNames: album.artists.map(\.name),
+            albumArtistNames: (album.artists ?? []).map(\.name),
             trackNumber: track_number ?? 0,
             durationSeconds: TimeInterval(duration_ms ?? 0) / 1000,
-            albumID: album.id,
+            albumID: albumID,
             // Spotify lists images largest first; ArtworkProcessor downsizes from there.
-            albumArtworkURL: album.images.first.flatMap { URL(string: $0.url) }
+            albumArtworkURL: (album.images ?? []).first.flatMap { URL(string: $0.url) }
         )
     }
 }
@@ -554,10 +583,11 @@ private struct AlbumTrackObject: Decodable {
 }
 
 private struct AlbumObject: Decodable {
-    let id: String
+    /// Null for anything Spotify does not hold as a release of its own.
+    let id: String?
     let name: String
-    let artists: [NamedObject]
-    let images: [ImageObject]
+    let artists: [NamedObject]?
+    let images: [ImageObject]?
 }
 
 private struct NamedObject: Decodable {

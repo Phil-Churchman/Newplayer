@@ -29,6 +29,14 @@ struct SourcesView: View {
                 let newKind: SourceKind? = isOn ? kind : nil
                 SourceSelection.select(newKind, among: sources, modelContext: modelContext)
                 selectedSourceKindRaw = newKind?.rawValue ?? -1
+                // Switching *into* Spotify mode is one of the two moments this phone should be
+                // brought into Spotify's device list — the other is Refresh Devices. Done here
+                // rather than when the screen appears, because appearing says nothing about
+                // which mode the user is in: this screen shows a Spotify source whenever one
+                // exists, so activating on appearance woke Spotify in MPD mode too.
+                if newKind == .spotify, let spotifySource {
+                    viewModel.loadSpotifyDevices(source: spotifySource, activatingThisPhone: true)
+                }
             }
         )
     }
@@ -38,6 +46,9 @@ struct SourcesView: View {
     private var showNetwork: Bool { selectedKind == .network }
     private var showSpotify: Bool { selectedKind == .spotify }
     @State private var spotifyClientIDInput = ""
+    /// Seeded from the stored id, so re-authorizing normally needs no typing — but correctable
+    /// in place when the stored id is what Spotify is rejecting.
+    @State private var reauthorizeClientIDInput = ""
     @State private var infoTopic: SourceInfoTopic?
 
     private var localSource: Source? {
@@ -94,13 +105,12 @@ struct SourcesView: View {
         List {
             Section {
                 HStack {
-                    Toggle("Local Library", isOn: selectionBinding(for: .local))
+                    Toggle("Local files", isOn: selectionBinding(for: .local))
                     InfoButton { infoTopic = .local }
                 }
                 if showLocal, let localSource {
                     SourceRowView(
                         source: localSource,
-                        isActive: localSource.isActive,
                         progress: viewModel.syncProgress,
                         onRescan: { viewModel.rescan(source: localSource, modelContext: modelContext) }
                     )
@@ -128,13 +138,12 @@ struct SourcesView: View {
 
             Section {
                 HStack {
-                    Toggle("Music Library", isOn: selectionBinding(for: .mediaLibrary))
+                    Toggle("Apple Music", isOn: selectionBinding(for: .mediaLibrary))
                     InfoButton { infoTopic = .mediaLibrary }
                 }
                 if showMediaLibrary, let mediaLibrarySource {
                     SourceRowView(
                         source: mediaLibrarySource,
-                        isActive: mediaLibrarySource.isActive,
                         progress: viewModel.syncProgress,
                         onRescan: { viewModel.rescan(source: mediaLibrarySource, modelContext: modelContext) }
                     )
@@ -147,7 +156,7 @@ struct SourcesView: View {
                         )
                     } label: {
                         HStack {
-                            Text("Import from Music Library")
+                            Text("Import from Apple Music")
                             if viewModel.isImportingMediaLibrary {
                                 Spacer()
                                 ProgressView()
@@ -165,28 +174,33 @@ struct SourcesView: View {
 
             Section {
                 HStack {
-                    Toggle("Network Host (MPD)", isOn: selectionBinding(for: .network))
+                    Toggle("MPD", isOn: selectionBinding(for: .network))
                     InfoButton { infoTopic = .network }
                 }
                 if showNetwork, let networkSource {
                     SourceRowView(
                         source: networkSource,
-                        isActive: networkSource.isActive,
                         progress: viewModel.syncProgress,
                         onRescan: { viewModel.rescan(source: networkSource, modelContext: modelContext) }
                     )
-                    Button {
-                        viewModel.syncWithMusicServer(source: networkSource, modelContext: modelContext)
-                    } label: {
-                        HStack {
-                            Text("Sync with Music Server")
-                            if serverSyncInProgress {
-                                Spacer()
-                                ProgressView()
+                    HStack {
+                        Button {
+                            viewModel.syncWithMusicServer(source: networkSource, modelContext: modelContext)
+                        } label: {
+                            HStack {
+                                Text("Sync MPD Host to Music Server")
+                                if serverSyncInProgress {
+                                    Spacer()
+                                    ProgressView()
+                                }
                             }
                         }
+                        .disabled(serverSyncInProgress)
+                        // Its own topic rather than the MPD one: the difference between this and
+                        // the refresh icon is the thing people need explaining, and burying it in
+                        // a general description of MPD is where it was already failing to land.
+                        InfoButton { infoTopic = .mpdServerSync }
                     }
-                    .disabled(serverSyncInProgress)
                     if let serverSyncStatusText {
                         Text(serverSyncStatusText)
                             .font(.caption)
@@ -230,7 +244,6 @@ struct SourcesView: View {
                 if showSpotify, let spotifySource {
                     SourceRowView(
                         source: spotifySource,
-                        isActive: spotifySource.isActive,
                         progress: viewModel.syncProgress,
                         onRescan: { viewModel.rescan(source: spotifySource, modelContext: modelContext) }
                     )
@@ -249,7 +262,7 @@ struct SourcesView: View {
                         }
                     }
                     Button {
-                        viewModel.loadSpotifyDevices(source: spotifySource)
+                        viewModel.loadSpotifyDevices(source: spotifySource, activatingThisPhone: true)
                     } label: {
                         HStack {
                             Text("Refresh Devices")
@@ -268,16 +281,19 @@ struct SourcesView: View {
                     // Plays through the Spotify app on this phone instead of over Connect,
                     // and stops polling Spotify's servers. The library itself is already local,
                     // so browsing works offline either way.
-                    Toggle("Offline mode", isOn: Binding(
-                        get: { spotifySource.isOfflineMode },
-                        set: { isOn in
-                            viewModel.setSpotifyOfflineMode(isOn, source: spotifySource, modelContext: modelContext)
-                            // Told directly, the same way the device picker is: the player reads
-                            // this when a source becomes active, and toggling a switch doesn't
-                            // change which source that is.
-                            playback.setSpotifyOfflineMode(isOn)
-                        }
-                    ))
+                    HStack {
+                        Toggle("Offline mode", isOn: Binding(
+                            get: { spotifySource.isOfflineMode },
+                            set: { isOn in
+                                viewModel.setSpotifyOfflineMode(isOn, source: spotifySource, modelContext: modelContext)
+                                // Told directly, the same way the device picker is: the player
+                                // reads this when a source becomes active, and toggling a switch
+                                // doesn't change which source that is.
+                                playback.setSpotifyOfflineMode(isOn)
+                            }
+                        ))
+                        InfoButton { infoTopic = .spotifyOfflineMode }
+                    }
                     if spotifySource.isOfflineMode {
                         Text("Opens the Spotify app at the track you pick, which plays it if it's downloaded. Spotify won't accept remote control without a network, so New player can't run the queue or the transport while offline.")
                             .font(.caption)
@@ -288,9 +304,23 @@ struct SourcesView: View {
                     // Signing in again is the only fix — a refresh cannot widen a token — and
                     // without this the only route to one was Sign Out and start over.
                     if viewModel.spotifyNeedsReauthorization {
+                        // The id is editable here because the sign-in it feeds can fail on the
+                        // id itself: Spotify's authorize page answers "client_id: invalid" for
+                        // an id that no longer matches an app in the dashboard, and correcting
+                        // it was reachable only through Sign Out — which deletes the source, and
+                        // the entire imported library with it.
+                        TextField("Spotify client ID", text: $reauthorizeClientIDInput)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                            .task(id: spotifySource.spotifyClientID) {
+                                if reauthorizeClientIDInput.isEmpty {
+                                    reauthorizeClientIDInput = spotifySource.spotifyClientID
+                                }
+                            }
                         Button {
                             viewModel.connectSpotify(
-                                clientID: spotifySource.spotifyClientID,
+                                clientID: reauthorizeClientIDInput,
                                 existingSource: spotifySource,
                                 allSources: sources,
                                 modelContext: modelContext
@@ -304,7 +334,10 @@ struct SourcesView: View {
                                 }
                             }
                         }
-                        .disabled(viewModel.isSigningIntoSpotify)
+                        .disabled(
+                            viewModel.isSigningIntoSpotify
+                                || reauthorizeClientIDInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        )
                     }
                     Button("Sign Out", role: .destructive) {
                         viewModel.signOutOfSpotify(source: spotifySource, allSources: sources, modelContext: modelContext)
@@ -348,9 +381,24 @@ struct SourcesView: View {
         .listStyle(.plain)
         .miniPlayerContentInset()
         .navigationTitle("Sources")
+        // Starts the poll that reports a server-side sync. Without this nothing ever advanced
+        // the phase past "Asking the server to sync…": the request was sent, the monitor that
+        // watches for the server finishing was written, and the call that starts it was missing —
+        // so the button worked and the screen said it hadn't.
+        .task(id: networkSource?.persistentModelID) {
+            guard let networkSource else { return }
+            await viewModel.monitorServerSync(source: networkSource, modelContext: modelContext)
+        }
+        // Re-reads the list when this phone has just been made Spotify's active device. Spotify
+        // lists a device only once something has played to it, so until that happens the phone is
+        // simply absent from "Play On" — and without this it would stay absent until the screen
+        // was opened afresh.
+        .onChange(of: playback.localSpotifyActivations) { _, _ in
+            if let spotifySource { viewModel.loadSpotifyDevices(source: spotifySource) }
+        }
         .onAppear {
             viewModel.setSourcesScreenVisible(true)
-            if let spotifySource { viewModel.loadSpotifyDevices(source: spotifySource) }
+            if showSpotify, let spotifySource { viewModel.loadSpotifyDevices(source: spotifySource) }
         }
         .onDisappear { viewModel.setSourcesScreenVisible(false) }
         .sheet(item: $infoTopic) { topic in

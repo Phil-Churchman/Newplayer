@@ -27,31 +27,12 @@ final class MPDArtworkFetcher {
     /// re-runs a full readpicture/albumart probe across several tracks, for nothing.
     private var knownMissingArtwork: Set<PersistentIdentifier> = []
     private var isDraining = false
-    /// When the next cover may be fetched. Set by `yieldToPlayback()`.
-    private var nextFetchAllowedAt: Date?
-    /// Whether the server is also busy playing something. Covers go slowly then, and the host
-    /// evidently cannot do both at full tilt: with a track playing, the status poll starts
-    /// failing and the transport goes sluggish.
-    private var isPlaybackActive = false
-    /// Kept so a resume can restart the drain. Always the main context in practice; the drain
-    /// needs one and the thing that resumes it — playback stopping — has no view to supply it.
-    private var lastModelContext: ModelContext?
     private var client: MPDClientProtocol?
     private var clientEndpoint: String?
     private var activeScope: UUID?
 
-    /// The pauses are injectable so tests needn't sit through them — they are about being
-    /// polite to a real server, and there is no server in a test.
-    init(
-        makeClient: @escaping () -> MPDClientProtocol = { MPDClient() },
-        pauseBetweenFetches: TimeInterval = 0.2,
-        pauseBetweenFetchesWhilePlaying: TimeInterval = 1.5,
-        playbackRecoveryPause: TimeInterval = 3
-    ) {
+    init(makeClient: @escaping () -> MPDClientProtocol = { MPDClient() }) {
         self.makeClient = makeClient
-        self.pauseBetweenFetches = pauseBetweenFetches
-        self.pauseBetweenFetchesWhilePlaying = pauseBetweenFetchesWhilePlaying
-        self.playbackRecoveryPause = playbackRecoveryPause
     }
 
     /// - Parameter scope: the screen this request came from. When it differs from the last
@@ -79,49 +60,21 @@ final class MPDArtworkFetcher {
             }
         }
 
-        lastModelContext = modelContext
-
         // Kicked even when this album was already queued: the drain stops when the host can't be
         // reached, and if an already-pending request returned early here there would be nothing
         // left to restart it — the queue would sit full and idle for the rest of the session.
         drainIfNeeded(modelContext: modelContext)
     }
 
-    /// How long to leave the server alone after the playback connection has struggled.
-    ///
-    /// Covers and transport commands run on separate connections, but not on separate servers: a
-    /// modest host pulling a multi-megabyte cover in twenty-odd round trips has nothing left to
-    /// answer a status poll with, and the poll then gives up and rebuilds its connection. Music
-    /// stuttering matters more than a cover arriving a second later, so covers yield.
-    private let playbackRecoveryPause: TimeInterval
-
     /// How long to wait before trying an unreachable host again, multiplied by the attempt
     /// number, and how many times to bother.
     private static let unreachableBackoff: TimeInterval = 2
     private static let maxUnreachableRetries = 4
 
-    /// A gap between covers, so a long queue doesn't hold the server flat out.
-    private let pauseBetweenFetches: TimeInterval
-    /// The same, while the server is also playing — when it has far less to spare.
-    private let pauseBetweenFetchesWhilePlaying: TimeInterval
-
-    /// Called when the playback connection has had trouble, to stop competing with it.
-    func yieldToPlayback() {
-        nextFetchAllowedAt = Date().addingTimeInterval(playbackRecoveryPause)
-    }
-
-    /// Told whether the server is busy playing, so covers can back off while it is.
-    ///
-    /// The resume matters as much as the backoff. Covers stopped when playback started and
-    /// stayed stopped after it ended, because nothing restarted the drain — it only ever began
-    /// from a UI request, and a user who isn't scrolling makes none.
-    func setPlaybackActive(_ isActive: Bool) {
-        guard isPlaybackActive != isActive else { return }
-        isPlaybackActive = isActive
-        guard !isActive, let context = lastModelContext, !pendingIDs.isEmpty else { return }
-        nextFetchAllowedAt = nil
-        drainIfNeeded(modelContext: context)
-    }
+    // No pacing between covers. Gaps were added when a poll-failure-and-stutter looked like this
+    // queue swamping a modest host, but the cause turned out to be the network — so they were
+    // slowing covers down for nothing. Requests are already serialized over one connection,
+    // which is the limit that matters.
 
     /// Drops everything still queued. A fetch already in progress is allowed to finish rather
     /// than being torn down mid-transfer — aborting would mean dropping the connection and
@@ -152,7 +105,6 @@ final class MPDArtworkFetcher {
             while true {
                 var hostUnreachable = false
                 while let albumID = self.takeNextRequest() {
-                    await self.waitUntilAllowedToFetch()
                     let reachable = await self.fetchArtwork(forAlbumID: albumID, modelContext: modelContext)
                     guard reachable else {
                         // The host isn't answering. Put this one back and stop, rather than
@@ -193,30 +145,6 @@ final class MPDArtworkFetcher {
                     unreachableAttempts = 0
                 }
             }
-        }
-    }
-
-    /// Holds off until the server has been left alone long enough.
-    ///
-    /// Waited in slices rather than one long sleep, and the target is re-read each time. A
-    /// single sleep was wrong twice over: it ignored playback stopping until the whole pause had
-    /// elapsed, and it held `isDraining` the entire time — so the resume could not start a drain
-    /// either, and covers stayed stopped long after the server was free.
-    private func waitUntilAllowedToFetch() async {
-        let slice: UInt64 = 100_000_000
-        let sliceSeconds = Double(slice) / 1_000_000_000
-
-        // A deliberate yield after the playback connection struggled.
-        while let allowedAt = nextFetchAllowedAt, allowedAt > Date() {
-            try? await Task.sleep(nanoseconds: slice)
-        }
-        nextFetchAllowedAt = nil
-
-        // The ordinary gap between covers, which widens while the server is also playing.
-        var waited: TimeInterval = 0
-        while waited < (isPlaybackActive ? pauseBetweenFetchesWhilePlaying : pauseBetweenFetches) {
-            try? await Task.sleep(nanoseconds: slice)
-            waited += sliceSeconds
         }
     }
 

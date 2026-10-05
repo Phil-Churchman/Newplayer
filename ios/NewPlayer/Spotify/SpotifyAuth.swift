@@ -35,7 +35,9 @@ struct SpotifyTokens: Equatable {
 final class SpotifyAuth: NSObject, SpotifyAuthorizing {
     /// Must match a redirect URI registered against the client ID in Spotify's dashboard, and
     /// the URL scheme declared in Info.plist.
-    static let redirectURI = "newplayer://spotify-callback"
+    /// `nonisolated` for the same reason as `requiredScopes` below: views and plain structs read
+    /// it, and an immutable string literal has no state for main-actor isolation to protect.
+    nonisolated static let redirectURI = "newplayer://spotify-callback"
     private static let callbackScheme = "newplayer"
 
     /// user-library-read covers saved tracks and albums; user-read-private carries the
@@ -46,7 +48,12 @@ final class SpotifyAuth: NSObject, SpotifyAuthorizing {
     /// Spotify app on this phone. Adding it here means tokens issued before it existed no longer
     /// satisfy `hasAllRequiredScopes`, so the app asks for sign-in again rather than failing
     /// every App Remote connection with a token that can never work.
-    static let requiredScopes: Set<String> = [
+    ///
+    /// `nonisolated` because `SpotifyTokens` reads it, and that is a plain struct with no actor
+    /// of its own — under Swift 6 rules, reaching into a main-actor-isolated static from there is
+    /// an error. Safe to expose: it is an immutable set of string literals, so there is no state
+    /// for the isolation to have been protecting.
+    nonisolated static let requiredScopes: Set<String> = [
         "user-library-read",
         "user-read-private",
         "user-read-playback-state",
@@ -76,8 +83,25 @@ final class SpotifyAuth: NSObject, SpotifyAuthorizing {
     }
 
     func signIn(clientID: String) async throws -> SpotifyTokens {
-        guard !clientID.trimmingCharacters(in: .whitespaces).isEmpty else {
+        // Trimmed, and the trimmed value is what gets sent. Checking a trimmed copy while
+        // sending the original let a pasted id keep its trailing newline, and Spotify's
+        // authorize page then rejects the whole request with "client_id: invalid" — which reads
+        // as a wrong id rather than an invisible character on the end of a right one.
+        // `.whitespacesAndNewlines`, not `.whitespaces`: the latter is spaces and tabs only, so
+        // it does not remove the newline that copying from a web page brings along.
+        let clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clientID.isEmpty else {
             throw SpotifyError.missingClientID
+        }
+        // Checked here rather than left to Spotify. Their authorize page answers any id it
+        // doesn't recognise with "client_id: invalid" — a page that names no cause, offers no
+        // remedy and leaves nothing behind in the app to look at afterwards. The shape is fixed,
+        // so the common pastes that cause it (a truncated id, a whole URL, an id with a stray
+        // character in the middle) can be named exactly, before the browser opens.
+        if let complaint = Self.clientIDComplaint(about: clientID) {
+            throw SpotifyError.authorizationFailed(
+                "That doesn't look like a Spotify client ID — \(complaint). Copy the Client ID from your app at developer.spotify.com/dashboard; it is 32 letters and digits."
+            )
         }
 
         let verifier = Self.makeCodeVerifier()
@@ -92,6 +116,11 @@ final class SpotifyAuth: NSObject, SpotifyAuthorizing {
             .init(name: "code_challenge", value: challenge),
             .init(name: "scope", value: Self.scopes),
         ]
+
+        // Logged because the alternative, when Spotify refuses the request, is guessing at what
+        // was in it. Nothing here is secret: the client id is public by design and the PKCE
+        // challenge is a one-time hash whose verifier never leaves the app.
+        print("SpotifyAuth: authorizing with client_id=\(clientID) (\(clientID.count) chars), redirect_uri=\(Self.redirectURI), scope=\(Self.scopes)")
 
         let callbackURL = try await authorize(url: components.url!)
         guard let code = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
@@ -109,8 +138,10 @@ final class SpotifyAuth: NSObject, SpotifyAuthorizing {
     }
 
     func refresh(clientID: String, refreshToken: String) async throws -> SpotifyTokens {
+        // Trimmed here too: an id stored by a build that kept its trailing newline is still in
+        // the database, and this is what lets it work again without a migration.
         var tokens = try await requestTokens(form: [
-            "client_id": clientID,
+            "client_id": clientID.trimmingCharacters(in: .whitespacesAndNewlines),
             "grant_type": "refresh_token",
             "refresh_token": refreshToken,
         ])
@@ -183,6 +214,25 @@ final class SpotifyAuth: NSObject, SpotifyAuthorizing {
             expiresAt: Date().addingTimeInterval(TimeInterval(decoded.expires_in)),
             scopes: Set((decoded.scope ?? "").split(separator: " ").map(String.init))
         )
+    }
+
+    /// What is wrong with an id's shape, or nil if nothing is. A Spotify client ID is 32
+    /// hexadecimal characters; this reports how the given one differs rather than just saying no,
+    /// because "64 characters, not 32" and "contains ':', '/'" point straight at the mistake —
+    /// a value pasted twice, or a whole URL pasted instead of the id.
+    static func clientIDComplaint(about clientID: String) -> String? {
+        let nonHex = Set(clientID.filter { !$0.isHexDigit })
+        if clientID.count == 32 && nonHex.isEmpty { return nil }
+
+        var problems: [String] = []
+        if clientID.count != 32 {
+            problems.append("it is \(clientID.count) character\(clientID.count == 1 ? "" : "s") long, not 32")
+        }
+        if !nonHex.isEmpty {
+            let listed = nonHex.sorted().map { $0 == " " ? "a space" : "'\($0)'" }.joined(separator: ", ")
+            problems.append("it contains \(listed)")
+        }
+        return problems.joined(separator: ", and ")
     }
 
     // MARK: - PKCE

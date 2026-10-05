@@ -63,6 +63,10 @@ final class SpotifySession {
         let needsWiderPermissions = stored.map { !$0.hasAllRequiredScopes } ?? false
 
         if let stored, !stored.isExpired, !needsWiderPermissions {
+            // Logged because a 403 from Spotify is otherwise impossible to attribute: a missing
+            // scope and a restriction on the endpoint itself look identical from here, and the
+            // granted set is the only thing that tells them apart.
+            print("SpotifySession: token grants \(stored.scopes.sorted().joined(separator: " "))")
             return stored.accessToken
         }
 
@@ -95,7 +99,10 @@ final class SpotifySession {
 
     /// A refresh happens without anyone watching, so it must not be able to run long. Interactive
     /// sign-in is deliberately *not* bounded this way: a person may take minutes over it.
-    static let refreshDeadlineSeconds: TimeInterval = 20
+    /// `nonisolated` because it is a default argument, and those are evaluated at the *call* site
+    /// — which is wherever a `SpotifySession` happens to be constructed, not on this actor. Safe
+    /// to expose: an immutable number has no state for isolation to protect.
+    nonisolated static let refreshDeadlineSeconds: TimeInterval = 20
 
     /// Races an operation against a deadline. Whichever finishes first wins; the loser is
     /// cancelled inside the group, since a task group cannot return until its children are done.

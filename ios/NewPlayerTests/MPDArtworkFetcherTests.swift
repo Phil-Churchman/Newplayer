@@ -53,7 +53,7 @@ final class MPDArtworkFetcherTests: XCTestCase {
         await mock.setArtworkDelay(nanoseconds: 60_000_000)
         await mock.setDefaultArtwork(TestImage.jpegData())
 
-        let fetcher = MPDArtworkFetcher(makeClient: { mock }, pauseBetweenFetches: 0, pauseBetweenFetchesWhilePlaying: 0, playbackRecoveryPause: 0)
+        let fetcher = MPDArtworkFetcher(makeClient: { mock })
         let scope = UUID()
         for album in albums {
             fetcher.fetchIfNeeded(album: album, modelContext: context, scope: scope)
@@ -75,7 +75,7 @@ final class MPDArtworkFetcherTests: XCTestCase {
         await mock.setArtworkDelay(nanoseconds: 120_000_000)
         await mock.setDefaultArtwork(TestImage.jpegData())
 
-        let fetcher = MPDArtworkFetcher(makeClient: { mock }, pauseBetweenFetches: 0, pauseBetweenFetchesWhilePlaying: 0, playbackRecoveryPause: 0)
+        let fetcher = MPDArtworkFetcher(makeClient: { mock })
         let firstScreen = UUID()
         for album in albums.prefix(6) {
             fetcher.fetchIfNeeded(album: album, modelContext: context, scope: firstScreen)
@@ -106,7 +106,7 @@ final class MPDArtworkFetcherTests: XCTestCase {
 
         let mock = MockMPDClient()
         await mock.setDefaultArtwork(TestImage.jpegData())
-        let fetcher = MPDArtworkFetcher(makeClient: { mock }, pauseBetweenFetches: 0, pauseBetweenFetchesWhilePlaying: 0, playbackRecoveryPause: 0)
+        let fetcher = MPDArtworkFetcher(makeClient: { mock })
         fetcher.fetchIfNeeded(album: albums[0], modelContext: context, scope: UUID())
 
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -123,7 +123,7 @@ final class MPDArtworkFetcherTests: XCTestCase {
 
         let mock = MockMPDClient()
         await mock.setDefaultArtwork(nil) // server has nothing
-        let fetcher = MPDArtworkFetcher(makeClient: { mock }, pauseBetweenFetches: 0, pauseBetweenFetchesWhilePlaying: 0, playbackRecoveryPause: 0)
+        let fetcher = MPDArtworkFetcher(makeClient: { mock })
 
         fetcher.fetchIfNeeded(album: albums[0], modelContext: context, scope: UUID())
         await waitUntil { await mock.artworkFetchCount >= 1 }
@@ -146,7 +146,7 @@ final class MPDArtworkFetcherTests: XCTestCase {
         let mock = MockMPDClient()
         await mock.setConnectError(MPDError.connectionFailed("refused"))
 
-        let fetcher = MPDArtworkFetcher(makeClient: { mock }, pauseBetweenFetches: 0, pauseBetweenFetchesWhilePlaying: 0, playbackRecoveryPause: 0)
+        let fetcher = MPDArtworkFetcher(makeClient: { mock })
         let scope = UUID()
         for album in albums {
             fetcher.fetchIfNeeded(album: album, modelContext: context, scope: scope)
@@ -179,7 +179,7 @@ final class MPDArtworkFetcherTests: XCTestCase {
         // Holds the socket open long enough to land a request mid-teardown.
         await mock.setDisconnectDelay(nanoseconds: 150_000_000)
 
-        let fetcher = MPDArtworkFetcher(makeClient: { mock }, pauseBetweenFetches: 0, pauseBetweenFetchesWhilePlaying: 0, playbackRecoveryPause: 0)
+        let fetcher = MPDArtworkFetcher(makeClient: { mock })
         let scope = UUID()
 
         fetcher.fetchIfNeeded(album: albums[0], modelContext: context, scope: scope)
@@ -192,70 +192,6 @@ final class MPDArtworkFetcherTests: XCTestCase {
         XCTAssertNotNil(albums[1].artwork, "a request made as the drain wound down was dropped")
     }
 
-    /// Covers and transport commands share one server, even on separate connections. A host
-    /// pulling a multi-megabyte image in twenty-odd round trips has nothing left to answer a
-    /// status poll with, and the poll then gives up and rebuilds its connection — which showed
-    /// up as music stuttering while browsing. So covers yield when playback has had trouble.
-    func testArtworkYieldsAfterThePlaybackConnectionStruggles() async throws {
-        let container = try makeContainer()
-        let context = ModelContext(container)
-        let (_, albums) = try seed(1, in: context)
-
-        let mock = MockMPDClient()
-        await mock.setDefaultArtwork(TestImage.jpegData())
-
-        let fetcher = MPDArtworkFetcher(
-            makeClient: { mock },
-            pauseBetweenFetches: 0,
-            pauseBetweenFetchesWhilePlaying: 0,
-            playbackRecoveryPause: 0.4
-        )
-
-        fetcher.yieldToPlayback()
-        let started = Date()
-        fetcher.fetchIfNeeded(album: albums[0], modelContext: context, scope: UUID())
-        await waitUntil(timeout: 5) { albums[0].artwork != nil }
-
-        XCTAssertGreaterThanOrEqual(
-            Date().timeIntervalSince(started), 0.3,
-            "the cover should have waited for the playback connection to recover"
-        )
-    }
-
-    /// Covers stopped when playback started and stayed stopped after it ended. The drain only
-    /// ever began from a UI request, and someone listening rather than scrolling makes none — so
-    /// playback ending has to restart it.
-    func testCoversResumeWhenPlaybackStops() async throws {
-        let container = try makeContainer()
-        let context = ModelContext(container)
-        let (_, albums) = try seed(2, in: context)
-
-        let mock = MockMPDClient()
-        await mock.setDefaultArtwork(TestImage.jpegData())
-
-        // A long pause while playing, so nothing gets through until playback stops.
-        let fetcher = MPDArtworkFetcher(
-            makeClient: { mock },
-            pauseBetweenFetches: 0,
-            pauseBetweenFetchesWhilePlaying: 60,
-            playbackRecoveryPause: 0
-        )
-
-        fetcher.setPlaybackActive(true)
-        for album in albums {
-            fetcher.fetchIfNeeded(album: album, modelContext: context, scope: UUID())
-        }
-        // Nothing should arrive while the server is busy playing.
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertTrue(albums.allSatisfy { $0.artwork == nil }, "covers should wait while playing")
-
-        fetcher.setPlaybackActive(false)
-
-        await waitUntil(timeout: 5) { albums.contains { $0.artwork != nil } }
-        XCTAssertTrue(albums.contains { $0.artwork != nil },
-                      "the queue should restart itself once playback stops")
-    }
-
     func testTheQueueSurvivesAFailedConnectionAndResumes() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -263,7 +199,7 @@ final class MPDArtworkFetcherTests: XCTestCase {
 
         let mock = MockMPDClient()
         await mock.setConnectError(MPDError.connectionFailed("refused"))
-        let fetcher = MPDArtworkFetcher(makeClient: { mock }, pauseBetweenFetches: 0, pauseBetweenFetchesWhilePlaying: 0, playbackRecoveryPause: 0)
+        let fetcher = MPDArtworkFetcher(makeClient: { mock })
         let scope = UUID()
         for album in albums {
             fetcher.fetchIfNeeded(album: album, modelContext: context, scope: scope)

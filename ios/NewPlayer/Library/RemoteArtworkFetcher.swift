@@ -45,12 +45,16 @@ final class RemoteArtworkFetcher {
         }
 
         guard album.artwork == nil, album.artworkURL != nil else { return }
-        let albumID = album.persistentModelID
-        guard !knownFailures.contains(albumID) else { return }
+        enqueue(album.persistentModelID, modelContext: modelContext)
+    }
 
-        if !pendingSet.contains(albumID) {
-            pendingSet.insert(albumID)
-            pendingIDs.append(albumID)
+
+    private func enqueue(_ id: PersistentIdentifier, modelContext: ModelContext) {
+        guard !knownFailures.contains(id) else { return }
+
+        if !pendingSet.contains(id) {
+            pendingSet.insert(id)
+            pendingIDs.append(id)
             if pendingIDs.count > maximumPendingRequests {
                 let dropped = pendingIDs.removeFirst()
                 pendingSet.remove(dropped)
@@ -66,7 +70,7 @@ final class RemoteArtworkFetcher {
         Task { [weak self] in
             guard let self else { return }
             while let albumID = self.takeNextRequest() {
-                await self.fetch(albumID: albumID, modelContext: modelContext)
+                await self.fetch(id: albumID, modelContext: modelContext)
                 // Decoding a cover is the expensive part; give the UI a turn between them.
                 await Task.yield()
             }
@@ -80,33 +84,48 @@ final class RemoteArtworkFetcher {
         return albumID
     }
 
-    private func fetch(albumID: PersistentIdentifier, modelContext: ModelContext) async {
-        var descriptor = FetchDescriptor<Album>(predicate: #Predicate<Album> { $0.persistentModelID == albumID })
-        descriptor.fetchLimit = 1
-        guard let album = try? modelContext.fetch(descriptor).first,
-              album.artwork == nil,
-              let urlString = album.artworkURL,
-              let url = URL(string: urlString) else { return }
+    /// One cover, resolved from its row's identifier — a `PersistentIdentifier` does not say
+    /// what it identifies, so the row is fetched to find out.
+    private func fetch(id: PersistentIdentifier, modelContext: ModelContext) async {
+        guard let target = target(for: id, modelContext: modelContext) else { return }
+        guard let url = URL(string: target.urlString) else { return }
 
         do {
             let data = try await download(url)
             guard let processed = await ArtworkProcessor.processInBackground(data) else {
-                knownFailures.insert(albumID)
+                knownFailures.insert(id)
                 return
             }
-            album.apply(processed)
+            target.apply(processed)
             do {
                 try modelContext.save()
             } catch {
                 // Never swallowed. An unsaved cover leaves `artwork` nil, so the next launch
                 // downloads and re-processes every one of them again — which is why relaunching
                 // did not help and the same minutes-long stall repeated.
-                knownFailures.insert(albumID)
-                print("RemoteArtworkFetcher: couldn't save artwork for '\(album.name)' — \(error)")
+                knownFailures.insert(id)
+                print("RemoteArtworkFetcher: couldn't save artwork for '\(target.name)' — \(error)")
             }
         } catch {
-            knownFailures.insert(albumID)
-            print("RemoteArtworkFetcher: couldn't fetch artwork for '\(album.name)' — \(error)")
+            knownFailures.insert(id)
+            print("RemoteArtworkFetcher: couldn't fetch artwork for '\(target.name)' — \(error)")
         }
+    }
+
+    /// What to download and where to put it, for whichever row this identifier belongs to.
+    private struct ArtworkTarget {
+        let name: String
+        let urlString: String
+        let apply: (ArtworkProcessor.Processed) -> Void
+    }
+
+    private func target(for id: PersistentIdentifier, modelContext: ModelContext) -> ArtworkTarget? {
+        var albums = FetchDescriptor<Album>(predicate: #Predicate<Album> { $0.persistentModelID == id })
+        albums.fetchLimit = 1
+        if let album = try? modelContext.fetch(albums).first {
+            guard album.artwork == nil, let urlString = album.artworkURL else { return nil }
+            return ArtworkTarget(name: album.name, urlString: urlString) { album.apply($0) }
+        }
+        return nil
     }
 }

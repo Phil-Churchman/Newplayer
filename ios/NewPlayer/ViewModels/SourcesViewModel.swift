@@ -59,6 +59,7 @@ final class SourcesViewModel: ObservableObject {
     /// this it would hold a connection open and poll the host forever, from behind whatever tab
     /// you're actually looking at, competing with playback and artwork for the server.
     private var isSourcesScreenVisible = true
+    private let spotifyAppRemote: SpotifyAppRemoteControlling
 
     init(
         makeMPDClient: @escaping () -> MPDClientProtocol = { MPDClient() },
@@ -66,13 +67,15 @@ final class SourcesViewModel: ObservableObject {
         mediaLibrary: MediaLibraryProviding? = nil,
         spotifyAuth: SpotifyAuthorizing? = nil,
         spotifyClient: SpotifyAPIClient = SpotifyWebAPIClient(),
-        spotifyTokens: SpotifyTokenStoring? = nil
+        spotifyTokens: SpotifyTokenStoring? = nil,
+        spotifyAppRemote: SpotifyAppRemoteControlling? = nil
     ) {
         self.makeMPDClient = makeMPDClient
         self.monitorIntervalNanoseconds = monitorIntervalNanoseconds
         self.mediaLibrary = mediaLibrary ?? SystemMediaLibrary()
         self.spotifyAuth = spotifyAuth ?? SpotifyAuth()
         self.spotifyClient = spotifyClient
+        self.spotifyAppRemote = spotifyAppRemote ?? SpotifyAppRemote.shared
         self.spotifyTokens = spotifyTokens ?? SpotifyKeychainTokenStore()
         // The app-wide session unless a test supplied its own pieces, so this and PlaybackManager
         // share one token and one refresh rather than competing over the Keychain.
@@ -88,7 +91,7 @@ final class SourcesViewModel: ObservableObject {
     /// password, which is both their rule and the only safe way to do it.
     func connectSpotify(clientID: String, existingSource: Source?, allSources: [Source], modelContext: ModelContext) {
         guard !isSigningIntoSpotify else { return }
-        let trimmedID = clientID.trimmingCharacters(in: .whitespaces)
+        let trimmedID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedID.isEmpty else {
             errorMessage = SpotifyError.missingClientID.errorDescription
             return
@@ -168,7 +171,14 @@ final class SourcesViewModel: ObservableObject {
         try? modelContext.save()
     }
 
-    func loadSpotifyDevices(source: Source) {
+    /// Reads the device list, and only when asked does it bring this phone into that list.
+    ///
+    /// `activatingThisPhone` defaults to false because reading the list is harmless and happens
+    /// whenever the Sources screen appears, whereas activating bounces the user to the Spotify
+    /// app. Opening Sources — in any mode, including with Spotify inactive — used to activate,
+    /// because this screen shows a Spotify source whenever one exists rather than only when it
+    /// is the active one.
+    func loadSpotifyDevices(source: Source, activatingThisPhone: Bool = false) {
         guard !isLoadingSpotifyDevices, !source.spotifyClientID.isEmpty else { return }
         isLoadingSpotifyDevices = true
         spotifyDeviceMessage = nil
@@ -180,7 +190,26 @@ final class SourcesViewModel: ObservableObject {
                     clientID: source.spotifyClientID,
                     interactive: false
                 )
-                let devices = try await self.spotifyClient.fetchDevices(accessToken: token)
+                var devices = try await self.spotifyClient.fetchDevices(accessToken: token)
+
+                // Bring this phone up so Spotify registers it, which is the only way it appears
+                // in this list at all — but not when something else is already playing. Taking
+                // the music off a speaker because the user pressed Refresh would be its own kind
+                // of wrong, and the list is the thing they asked to refresh.
+                if activatingThisPhone, !devices.contains(where: \.isActive) {
+                    do {
+                        try await self.spotifyAppRemote.activateLocalPlayback(
+                            clientID: source.spotifyClientID,
+                            accessToken: token
+                        )
+                        devices = try await self.spotifyClient.fetchDevices(accessToken: token)
+                    } catch {
+                        // Not worth reporting: the list below is still whatever Spotify knows,
+                        // which is what was asked for.
+                        print("SourcesViewModel: couldn't bring this phone into the device list — \(error)")
+                    }
+                }
+
                 self.spotifyDevices = devices
                 self.spotifyNeedsReauthorization = false
                 self.spotifyDeviceMessage = Self.deviceHint(for: devices)

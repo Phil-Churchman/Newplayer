@@ -54,6 +54,14 @@ protocol SpotifyAppRemoteControlling: AnyObject {
         accessToken: String,
         canUseConnection: Bool
     ) async throws
+    /// Brings the Spotify app up so this phone becomes the device Connect plays on, then lets
+    /// iOS return here.
+    ///
+    /// Spotify Connect keeps playing wherever it last was — a desktop app, a speaker — and the
+    /// only way to make this phone the active device is to start the Spotify app playing. So
+    /// entering Spotify mode does that once, up front, rather than every track discovering it
+    /// afresh.
+    func activateLocalPlayback(clientID: String, accessToken: String) async throws
     /// Handles the callback Spotify sends back after a launch. Returns whether the URL was ours.
     @discardableResult
     func handleCallback(_ url: URL) -> Bool
@@ -158,6 +166,47 @@ final class SpotifyAppRemote: NSObject, SpotifyAppRemoteControlling {
 
         print("SpotifyAppRemote: playing \(first)")
         try await playerCall { $0.play("spotify:track:\(first)", callback: $1) }
+    }
+
+    func activateLocalPlayback(clientID: String, accessToken: String) async throws {
+        guard isSpotifyInstalled else {
+            print("SpotifyAppRemote: no Spotify app on this phone, so nothing to activate")
+            throw SpotifyAppRemoteError.spotifyNotInstalled
+        }
+
+        let remote = remote(for: clientID)
+        remote.connectionParameters.accessToken = accessToken
+
+        // Already connected means the Spotify app is up and this phone is the active device;
+        // bouncing the user to it would achieve nothing.
+        if remote.isConnected {
+            print("SpotifyAppRemote: already connected — this phone is active already")
+            return
+        }
+
+        // `authorizeAndPlayURI` is the only way to wake the Spotify app and have Spotify
+        // register this phone as a device, and it plays by design — an empty URI resumes
+        // whatever the account last played. So activation cannot avoid starting playback; it
+        // can only stop it again immediately, which is what the pause below is for.
+        print("SpotifyAppRemote: bringing Spotify up to make this phone the active device")
+        guard await authorizeAndPlay(remote, uri: "") else {
+            throw SpotifyAppRemoteError.couldNotConnect("Spotify refused to launch")
+        }
+        // Worth waiting for: a live connection is what lets later commands skip the launch,
+        // and the pause needs it.
+        try? await awaitConnection()
+
+        // Activating a device is not a request to play. Without this, opening Spotify mode or
+        // pressing Refresh Devices started music the user never asked for — and whatever the
+        // account happened to play last, at that.
+        do {
+            try await playerCall { $0.pause($1) }
+            print("SpotifyAppRemote: paused the playback the launch started")
+        } catch {
+            // The device is registered either way, which is what this was for. Reported rather
+            // than thrown so a stubborn pause doesn't read as a failure to activate.
+            print("SpotifyAppRemote: couldn't pause after activating — \(error)")
+        }
     }
 
     @discardableResult

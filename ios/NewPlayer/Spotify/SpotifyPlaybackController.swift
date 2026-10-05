@@ -29,6 +29,8 @@ protocol SpotifyPlaybackControlling {
     /// 204 and then stops — while the same commands drive a Mac or a speaker without trouble.
     /// This is the fallback for that, and it only makes sense for this device.
     func playOnLocalApp(trackIDs: [String], startAt index: Int, canUseConnection: Bool) async throws
+    /// Makes this phone the device Connect plays on, by bringing the Spotify app up.
+    func activateLocalApp() async throws
     /// Nil when no Spotify client is active.
     func playerState() async throws -> SpotifyPlayerState?
     /// Spotify's own queue, so tracks queued from the Spotify app show up here too.
@@ -181,6 +183,14 @@ final class SpotifyPlaybackController: SpotifyPlaybackControlling {
         try await command {
             try await self.client.seek(toMilliseconds: milliseconds, deviceID: $1, accessToken: $0)
         }
+    }
+
+    func activateLocalApp() async throws {
+        guard let appRemote else { throw SpotifyAppRemoteError.spotifyNotInstalled }
+        try await appRemote.activateLocalPlayback(
+            clientID: clientID,
+            accessToken: try await token()
+        )
     }
 
     func playerState() async throws -> SpotifyPlayerState? {

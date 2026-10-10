@@ -340,6 +340,86 @@ final class SpotifyImportTests: XCTestCase {
         XCTAssertEqual(deduped.first?.title, "A")
     }
 
+    /// The reported bug: a song listed twice in its album, queued twice when the album played,
+    /// and no resync ever fixing it. Spotify relinks per market, so the Liked Songs copy and the
+    /// saved-album copy of one recording can carry different ids — and matching on the id alone
+    /// let both through as separate songs.
+    func testOneRecordingUnderTwoIDsBecomesOneSong() {
+        let tracks: [SpotifyTrack] = [
+            .make(id: "liked-id", title: "Blue in Green", track: 3),
+            .make(id: "relinked-id", title: "Blue in Green", track: 3),
+        ]
+
+        let collapsed = SpotifyImportService.collapsingRelinkedTracks(tracks)
+
+        XCTAssertEqual(collapsed.count, 1)
+        // The saved copy's id is the one kept: liked tracks are passed in first, and a relinked
+        // id is not reliably playable when handed back in a play request.
+        XCTAssertEqual(collapsed.first?.id, "liked-id")
+    }
+
+    /// End to end, which is what the user sees: one row in the album, so one entry in the queue.
+    func testARelinkedDuplicateImportsAsASingleSong() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let client = FakeSpotifyClient()
+        client.tracks = [.make(id: "liked-id", title: "Blue in Green", track: 3)]
+        client.savedAlbumTracks = [.make(id: "relinked-id", title: "Blue in Green", track: 3)]
+
+        let result = try await SpotifyImportService.rescan(
+            source: source, client: client, accessToken: "token", modelContext: context
+        )
+
+        XCTAssertEqual(result.imported, 1)
+        let songs = try context.fetch(FetchDescriptor<Song>())
+        XCTAssertEqual(songs.map(\.relativePath), ["liked-id"])
+        let album = try XCTUnwrap(try context.fetch(FetchDescriptor<Album>()).first)
+        XCTAssertEqual(album.songs.count, 1, "one row in the album is the whole point")
+    }
+
+    /// And the resync clears what earlier syncs already stored, which is the half the user was
+    /// stuck on: the row for the id no longer reported stops being seen and is deleted.
+    func testAResyncClearsADuplicateAnEarlierSyncStored() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        // Stand in for what the old id-only matching left behind: both ids as separate songs.
+        try await LibraryRowBuilder.merge(
+            from: SpotifyImportService.makeRawSongs(from: [
+                .make(id: "liked-id", title: "Blue in Green", track: 3),
+                .make(id: "relinked-id", title: "Blue in Green", track: 3),
+            ]),
+            source: source,
+            modelContext: context
+        )
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Song>()).count, 2)
+
+        let client = FakeSpotifyClient()
+        client.tracks = [.make(id: "liked-id", title: "Blue in Green", track: 3)]
+        client.savedAlbumTracks = [.make(id: "relinked-id", title: "Blue in Green", track: 3)]
+        _ = try await SpotifyImportService.rescan(
+            source: source, client: client, accessToken: "token", modelContext: context
+        )
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Song>()).map(\.relativePath), ["liked-id"])
+    }
+
+    /// The key is tight on purpose: two different songs must not be collapsed into one just
+    /// because they sit on the same album.
+    func testDifferentSongsOnOneAlbumAreNotCollapsed() {
+        let tracks: [SpotifyTrack] = [
+            .make(id: "a", title: "So What", track: 1),
+            .make(id: "b", title: "Freddie Freeloader", track: 2),
+            // Same track number as track 1, different title: a second disc.
+            .make(id: "c", title: "Flamenco Sketches", track: 1),
+        ]
+
+        XCTAssertEqual(SpotifyImportService.collapsingRelinkedTracks(tracks).map(\.id), ["a", "b", "c"])
+    }
+
     // MARK: - Device selection in Sources
 
     /// Pressing Refresh brings this phone up so Spotify registers it — the only way it ever
@@ -454,9 +534,7 @@ final class SpotifyImportTests: XCTestCase {
 
         await waitUntil { viewModel.spotifyDevices.count == 2 }
         XCTAssertEqual(viewModel.spotifyDevices.map(\.name), ["Phil's iPhone", "Kitchen"])
-        // A note always accompanies the list now: it can legitimately be shorter than the one in
-        // the Spotify app, and that needs explaining rather than leaving the user to wonder.
-        XCTAssertNotNil(viewModel.spotifyDeviceMessage)
+        XCTAssertNil(viewModel.spotifyDeviceMessage, "a list with devices in it needs no note")
     }
 
     /// Loading devices runs when the screen appears, so it must never prompt for sign-in.

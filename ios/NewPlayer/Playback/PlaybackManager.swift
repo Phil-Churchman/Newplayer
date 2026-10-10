@@ -48,6 +48,26 @@ final class PlaybackManager {
         return spotifyQueue.first
     }
 
+    /// What is playing, which in Spotify mode is not always a library row.
+    ///
+    /// A track started in the Spotify app, or queued there from a search, may have no row in
+    /// this library at all. `currentSong` reads the library-backed queue, which cannot represent
+    /// such a track — so it went on pointing at whatever this app had last played, and the player
+    /// screens sat on that stale track while the Queue screen, which reads Spotify's own entries,
+    /// showed the right one.
+    ///
+    /// In Spotify mode Spotify is the authority. The library row is preferred only when it *is*
+    /// the track Spotify reports, so a track that was imported still shows its stored cover
+    /// rather than re-fetching one.
+    var nowPlayingItem: NowPlayingItem? {
+        if let entry = spotifyCurrentEntry {
+            if let song = currentSong, song.relativePath == entry.trackID { return .song(song) }
+            return .spotifyTrack(entry)
+        }
+        if let song = currentSong { return .song(song) }
+        return nil
+    }
+
     /// Surfaced when a remote player refuses a command — most usefully Spotify's "nothing is
     /// active to control", which otherwise looks like the buttons simply not working.
     private(set) var playbackErrorMessage: String?
@@ -235,6 +255,26 @@ final class PlaybackManager {
         currentSongID == song.persistentModelID
     }
 
+    /// What the player screens display: a library row, or a track only Spotify knows about.
+    enum NowPlayingItem: Equatable {
+        case song(Song)
+        case spotifyTrack(SpotifyQueueEntry)
+
+        var title: String {
+            switch self {
+            case .song(let song): song.title
+            case .spotifyTrack(let entry): entry.title
+            }
+        }
+
+        var artist: String {
+            switch self {
+            case .song(let song): song.artist
+            case .spotifyTrack(let entry): entry.artist
+            }
+        }
+    }
+
     /// Where a queue's transport commands go. Three routes now: this device's own AVPlayer, an
     /// MPD server, or whichever Spotify client is active. Derived from the song rather than a
     /// mode flag, so routing can't disagree with the data.
@@ -397,7 +437,15 @@ final class PlaybackManager {
         // this app believes it is playing: the device may have been started from Spotify itself.
         if isSpotifyMode {
             print("PlaybackManager: pausing Spotify — active source changed")
-            performSpotifyCommand { try await $0.pause() }
+            // Deliberately not through `performSpotifyCommand`: whether this courtesy succeeds
+            // is not the user's business, and reported, its refusal is what put a Spotify error
+            // in front of someone who had just switched to MPD.
+            Task { [weak self] in
+                guard let self else { return }
+                do { try await self.spotify.pause() } catch {
+                    print("PlaybackManager: the farewell pause was refused — \(error)")
+                }
+            }
         }
         if let previousClient = mpdClient {
             // Tell the server to stop before dropping the connection — otherwise switching
@@ -578,7 +626,7 @@ final class PlaybackManager {
     }
 
     func selectSpotifyDevice(id: String?) {
-        playbackErrorMessage = nil
+        showSpotifyError(nil)
         guard isSpotifyMode else {
             spotify.selectDevice(id: id)
             return
@@ -595,8 +643,8 @@ final class PlaybackManager {
             do {
                 try await self.spotify.takeOverDevice(id: id, play: shouldKeepPlaying)
             } catch {
-                self.playbackErrorMessage = (error as? SpotifyError)?.errorDescription
-                    ?? error.localizedDescription
+                self.showSpotifyError((error as? SpotifyError)?.errorDescription
+                    ?? error.localizedDescription)
                 return
             }
             await self.confirmTransfer(toDeviceID: id)
@@ -614,7 +662,7 @@ final class PlaybackManager {
             if let state = try? await spotify.playerState() {
                 await applySpotifyState(state)
                 if state.activeDeviceID == id {
-                    playbackErrorMessage = nil
+                    showSpotifyError(nil)
                     return
                 }
             }
@@ -638,7 +686,7 @@ final class PlaybackManager {
                     canUseConnection: !isSpotifyOfflineMode
                 )
                 showQueueHandedToLocalSpotify(trackIDs: ids, startAt: startIndex)
-                playbackErrorMessage = nil
+                showSpotifyError(nil)
                 await confirmSpotifyState()
                 return
             } catch {
@@ -646,7 +694,7 @@ final class PlaybackManager {
             }
         }
 
-        playbackErrorMessage = "Spotify didn't move playback to that device. It may have gone offline — try Refresh Devices."
+        showSpotifyError("Spotify didn't move playback to that device. It may have gone offline — try Refresh Devices.")
     }
 
     @ObservationIgnored
@@ -654,6 +702,26 @@ final class PlaybackManager {
 
     /// Reports a refused command and undoes the optimistic state that went with it — otherwise
     /// the UI keeps claiming to play something that never started.
+    /// Shows — or clears — a Spotify message, but only while Spotify is still the active source.
+    ///
+    /// Spotify's work is asynchronous and can outlive the source it belongs to. Leaving Spotify
+    /// mode sends a farewell pause, and when that came back refused it wrote "Spotify has no
+    /// device available to play on. Open the Spotify app on this phone" into the player *after*
+    /// `setActiveSource` had already cleared the message — so a Spotify remedy appeared while the
+    /// app was in MPD mode, for a service the user had just left.
+    ///
+    /// The clears are funnelled too: clearing is just as wrong once the message on screen belongs
+    /// to another source.
+    private func showSpotifyError(_ message: String?) {
+        guard isSpotifyMode else {
+            if let message {
+                print("PlaybackManager: dropped a Spotify message for a source already left — \(message)")
+            }
+            return
+        }
+        playbackErrorMessage = message
+    }
+
     private func reportSpotifyFailure(_ error: Error) {
         reportSpotifyFailure(message: (error as? SpotifyError)?.errorDescription ?? error.localizedDescription)
         // Only worth offering when it isn't already on, and only for the failures offline mode
@@ -671,6 +739,13 @@ final class PlaybackManager {
     /// so when Connect refused *and* the Spotify app couldn't be used, the player went on
     /// claiming to play something that never started.
     private func reportSpotifyFailure(message: String) {
+        // Nothing here applies once Spotify is not the active source: not the message, and not
+        // the `isPlaying` reset, which would stop another source's player from looking like it
+        // is playing.
+        guard isSpotifyMode else {
+            print("PlaybackManager: dropped a Spotify failure for a source already left — \(message)")
+            return
+        }
         playbackErrorMessage = message
         isPlaying = false
         syncRemoteClock()
@@ -770,7 +845,7 @@ final class PlaybackManager {
             self.logAudioSessionState("before play")
             do {
                 try await self.spotify.play(trackIDs: trackIDs, startAt: 0)
-                self.playbackErrorMessage = nil
+                self.showSpotifyError(nil)
             } catch where Self.meansConnectHasNowhereToPlay(error) {
                 // Connect found no device it can drive. Reporting that gave up while a perfectly
                 // good player sat on this very phone — so the Spotify app is launched and told
@@ -973,7 +1048,7 @@ final class PlaybackManager {
                 startAt: index,
                 canUseConnection: !isSpotifyOfflineMode
             )
-            playbackErrorMessage = nil
+            showSpotifyError(nil)
             showQueueHandedToLocalSpotify(trackIDs: trackIDs, startAt: index)
             await confirmSpotifyState()
             learnLocalSpotifyDeviceID()
@@ -1025,7 +1100,7 @@ final class PlaybackManager {
         // and every transport command goes out over the Web API. Sending them anyway just waits
         // out timeouts and reports failures the user can do nothing about.
         guard !isSpotifyOfflineMode else {
-            playbackErrorMessage = "Offline mode hands tracks to the Spotify app — use its own controls to skip."
+            showSpotifyError("Offline mode hands tracks to the Spotify app — use its own controls to skip.")
             return
         }
         currentTime = 0
@@ -1034,7 +1109,7 @@ final class PlaybackManager {
             guard let self else { return }
             do {
                 try await body(self.spotify)
-                self.playbackErrorMessage = nil
+                self.showSpotifyError(nil)
             } catch {
                 self.reportSpotifyFailure(error)
                 return
@@ -1049,7 +1124,7 @@ final class PlaybackManager {
     /// the button is for.
     private func skipSpotifyBack() {
         guard !isSpotifyOfflineMode else {
-            playbackErrorMessage = "Offline mode hands tracks to the Spotify app — use its own controls to skip."
+            showSpotifyError("Offline mode hands tracks to the Spotify app — use its own controls to skip.")
             return
         }
         currentTime = 0
@@ -1058,11 +1133,11 @@ final class PlaybackManager {
             guard let self else { return }
             do {
                 try await self.spotify.skipToPrevious()
-                self.playbackErrorMessage = nil
+                self.showSpotifyError(nil)
             } catch SpotifyError.actionNotAllowed {
                 // Nothing before this track: go back to its beginning instead.
                 try? await self.spotify.seek(to: 0)
-                self.playbackErrorMessage = nil
+                self.showSpotifyError(nil)
             } catch {
                 self.reportSpotifyFailure(error)
                 return
@@ -1124,14 +1199,22 @@ final class PlaybackManager {
     private func performSpotifyCommand(_ body: @escaping (SpotifyPlaybackControlling) async throws -> Void) {
         // Same reasoning as the skips: offline these reach a service that cannot be reached.
         guard !isSpotifyOfflineMode else { return }
+        // Which source this command belongs to. Checked again on the way out, because the await
+        // below can span a source change and none of this state belongs to the new one.
+        let sourceAtLaunch = activeSourceID
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await body(self.spotify)
-                self.playbackErrorMessage = nil
+                guard self.activeSourceID == sourceAtLaunch else { return }
+                self.showSpotifyError(nil)
             } catch {
+                guard self.activeSourceID == sourceAtLaunch else {
+                    print("PlaybackManager: ignoring a Spotify failure from a source already left — \(error)")
+                    return
+                }
                 let spotifyError = error as? SpotifyError
-                self.playbackErrorMessage = spotifyError?.errorDescription ?? error.localizedDescription
+                self.showSpotifyError(spotifyError?.errorDescription ?? error.localizedDescription)
                 if spotifyError == .noActiveDevice {
                     self.isPlaying = false
                     self.syncRemoteClock()

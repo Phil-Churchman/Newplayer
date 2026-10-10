@@ -39,29 +39,18 @@ final class SpotifyDeviceListTests: XCTestCase {
         XCTAssertTrue(locked.displayName(thisDeviceName: "").contains("not controllable"))
     }
 
-    /// The reported problem: no way to pick the phone. Spotify won't list an app that has never
-    /// played anything, so the hint has to say what to do rather than leaving an empty picker.
-    func testAListWithNoPhoneExplainsHowToMakeOneAppear() {
-        let hint = SourcesViewModel.deviceHint(for: [device("1", name: "Kitchen", type: "Speaker")])
-        XCTAssertNotNil(hint)
-        XCTAssertTrue(hint?.contains("this phone") == true, "got: \(hint ?? "nil")")
-    }
-
     func testAnEmptyListExplainsHowToMakeAnyDeviceAppear() {
         let hint = SourcesViewModel.deviceHint(for: [])
         XCTAssertNotNil(hint)
         XCTAssertTrue(hint?.contains("Refresh Devices") == true)
     }
 
-    /// "Why does this show fewer devices than the Spotify app?" is the obvious question, and the
-    /// answer is a limit of Spotify's API rather than a fault here — so the list says so.
-    func testTheListExplainsWhyItMayBeShorterThanTheSpotifyApp() {
+    /// A list with devices in it carries no note at all now.
+    func testAListWithDevicesCarriesNoNote() {
         let devices = [
             device("1", name: "Phil's iPhone"),
             device("2", name: "Kitchen", type: "Speaker"),
         ]
-        let hint = SourcesViewModel.deviceHint(for: devices)
-        XCTAssertNotNil(hint)
-        XCTAssertTrue(hint?.contains("Spotify app") == true, "got: \(hint ?? "nil")")
+        XCTAssertNil(SourcesViewModel.deviceHint(for: devices))
     }
 }

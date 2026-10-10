@@ -104,7 +104,7 @@ struct SourcesView: View {
     var body: some View {
         List {
             Section {
-                HStack {
+                HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                     Toggle("Local files", isOn: selectionBinding(for: .local))
                     InfoButton { infoTopic = .local }
                 }
@@ -137,7 +137,7 @@ struct SourcesView: View {
             }
 
             Section {
-                HStack {
+                HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                     Toggle("Apple Music", isOn: selectionBinding(for: .mediaLibrary))
                     InfoButton { infoTopic = .mediaLibrary }
                 }
@@ -173,7 +173,7 @@ struct SourcesView: View {
             }
 
             Section {
-                HStack {
+                HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                     Toggle("MPD", isOn: selectionBinding(for: .network))
                     InfoButton { infoTopic = .network }
                 }
@@ -183,7 +183,7 @@ struct SourcesView: View {
                         progress: viewModel.syncProgress,
                         onRescan: { viewModel.rescan(source: networkSource, modelContext: modelContext) }
                     )
-                    HStack {
+                    HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                         Button {
                             viewModel.syncWithMusicServer(source: networkSource, modelContext: modelContext)
                         } label: {
@@ -237,7 +237,7 @@ struct SourcesView: View {
             }
 
             Section {
-                HStack {
+                HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                     Toggle("Spotify", isOn: selectionBinding(for: .spotify))
                     InfoButton { infoTopic = .spotify }
                 }
@@ -281,7 +281,7 @@ struct SourcesView: View {
                     // Plays through the Spotify app on this phone instead of over Connect,
                     // and stops polling Spotify's servers. The library itself is already local,
                     // so browsing works offline either way.
-                    HStack {
+                    HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                         Toggle("Offline mode", isOn: Binding(
                             get: { spotifySource.isOfflineMode },
                             set: { isOn in
@@ -295,7 +295,7 @@ struct SourcesView: View {
                         InfoButton { infoTopic = .spotifyOfflineMode }
                     }
                     if spotifySource.isOfflineMode {
-                        Text("Opens the Spotify app at the track you pick, which plays it if it's downloaded. Spotify won't accept remote control without a network, so New player can't run the queue or the transport while offline.")
+                        Text("Opens the Spotify app at the track you pick, which plays it if it's downloaded. No queue; skip and pause come from Spotify's own controls.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

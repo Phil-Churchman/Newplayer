@@ -31,6 +31,32 @@ final class SpotifyPlaybackTests: XCTestCase {
         for _ in 0..<10 { await Task.yield() }
     }
 
+    /// The reported bug: "Spotify has no device available to play on. Open the Spotify app on
+    /// this phone" shown in the player while the app was in MPD mode.
+    ///
+    /// Leaving Spotify sends a farewell pause. When that came back refused, it wrote its message
+    /// *after* `setActiveSource` had cleared it — a remedy for a service the user had just left.
+    func testLeavingSpotifyShowsNoSpotifyErrorInTheNextMode() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.noActiveDevice // every command refused, the pause included
+
+        let manager = PlaybackManager(spotify: remote)
+        manager.setActiveSource(spotifySource())
+        await settle()
+
+        let mpd = Source(name: "Host", isActive: true, kind: .network)
+        mpd.host = "127.0.0.1"
+        mpd.port = 6600
+        manager.setActiveSource(mpd)
+        await settle()
+
+        XCTAssertFalse(manager.isSpotifySource, "the app has left Spotify mode")
+        XCTAssertNil(
+            manager.playbackErrorMessage,
+            "a Spotify refusal that lands after the switch must not surface in another mode"
+        )
+    }
+
     func testSelectingASpotifySourceConfiguresTheController() async {
         let remote = FakeSpotifyPlayback()
         let manager = PlaybackManager(spotify: remote)
@@ -580,6 +606,51 @@ final class SpotifyPlaybackTests: XCTestCase {
 
         XCTAssertEqual(manager.spotifyQueue.map(\.title), ["t1", "Found in Search"])
         XCTAssertEqual(manager.spotifyCurrentEntry?.trackID, "t1")
+    }
+
+    /// The reported bug: start a track in the Spotify app and the Queue screen showed it while
+    /// the player view and the mini player sat on the last track this app had played.
+    ///
+    /// `currentSong` reads the library-backed queue, which cannot hold a track that was never
+    /// imported — so it kept pointing at the stale row. The player screens read `nowPlayingItem`,
+    /// for which Spotify is the authority in Spotify mode.
+    func testThePlayerFollowsATrackStartedInSpotifyThatIsNotInTheLibrary() async {
+        let remote = FakeSpotifyPlayback()
+        let source = spotifySource()
+        let songs = [song("in-library", source: source)]
+
+        // What this app played: a library track, so the player legitimately shows its row.
+        remote.state = SpotifyPlayerState(
+            isPlaying: true, progressSeconds: 0, durationSeconds: 200,
+            trackID: "in-library", activeDeviceID: "phone"
+        )
+        remote.queueSnapshot = SpotifyQueueSnapshot(
+            currentTrackID: "in-library", entries: [entry("in-library", position: 0)]
+        )
+
+        let manager = PlaybackManager(spotify: remote, spotifyPollsPerQueueRead: 1)
+        manager.setActiveSource(source, resolveSong: { id in songs.first { $0.relativePath == id } })
+        await waitUntil { manager.nowPlayingItem != nil }
+        XCTAssertEqual(manager.nowPlayingItem, .song(songs[0]), "a library track still shows its row")
+
+        // Now something is started in the Spotify app that this library has never seen.
+        remote.state = SpotifyPlayerState(
+            isPlaying: true, progressSeconds: 0, durationSeconds: 180,
+            trackID: "started-in-spotify", activeDeviceID: "phone"
+        )
+        remote.queueSnapshot = SpotifyQueueSnapshot(
+            currentTrackID: "started-in-spotify",
+            entries: [entry("started-in-spotify", position: 0, title: "Started In Spotify")]
+        )
+
+        await waitUntil { manager.nowPlayingItem?.title == "Started In Spotify" }
+
+        XCTAssertEqual(manager.nowPlayingItem?.title, "Started In Spotify")
+        XCTAssertEqual(manager.nowPlayingItem?.artist, "A")
+        XCTAssertEqual(
+            manager.currentSong?.relativePath, "in-library",
+            "the library-backed queue is expected to still hold the stale row — that is why the player must not read it"
+        )
     }
 
     /// Playing from a point in Spotify's queue works even for a track with no library row.

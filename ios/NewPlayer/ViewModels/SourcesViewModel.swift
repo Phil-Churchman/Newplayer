@@ -231,19 +231,12 @@ final class SourcesViewModel: ObservableObject {
 
     /// What to tell the user about the list they can see.
     ///
-    /// Spotify only reports devices it can currently reach, and a Spotify app that has been
-    /// opened but has never played anything does not register — so "my phone isn't in the list"
-    /// is the common case and has a specific remedy rather than being a fault.
+    /// Only the empty case says anything: Spotify reports only devices it can currently reach, so
+    /// an empty list has a remedy rather than being a fault. A list with devices in it speaks for
+    /// itself.
     static func deviceHint(for devices: [SpotifyDevice]) -> String? {
-        if devices.isEmpty {
-            return "Spotify reports no devices. Open the Spotify app on the device you want to play on and start any track once, then tap Refresh Devices."
-        }
-        if !devices.contains(where: \.isPhone) {
-            return "To play on this phone, open the Spotify app here and start any track once, then tap Refresh Devices."
-        }
-        // Said whenever the list is short, because "why is this fewer than the Spotify app shows"
-        // is the obvious question and the answer isn't a fault in this app.
-        return "This is the list Spotify publishes for your account. The Spotify app also finds Bluetooth, AirPlay and speakers on your network directly, and those only appear here once you have played to them from Spotify at least once."
+        guard devices.isEmpty else { return nil }
+        return "Spotify reports no devices. Open the Spotify app on the device you want to play on and start any track once, then tap Refresh Devices."
     }
 
     /// Pins playback to one device, or back to automatic when nil. Remembered on the source so

@@ -53,7 +53,10 @@ enum LibraryRowBuilder {
         let existing = try existingRows(sourceID: sourceID, modelContext: modelContext)
         var artistsByName = existing.artistsByName
         var albumsByKey = existing.albumsByKey
-        let songsByPath = existing.songsByPath
+        // `var`, and added to as rows are inserted. Left as a snapshot of what was already
+        // stored, a path appearing twice in one sync missed the lookup both times and was
+        // inserted twice — the album and artist tables were already kept current this way.
+        var songsByPath = existing.songsByPath
 
         var seenArtists = Set<String>()
         var seenAlbums = Set<AlbumKey>()
@@ -98,7 +101,7 @@ enum LibraryRowBuilder {
                 update(existing, from: raw, album: album)
             } else {
                 inserted += 1
-                modelContext.insert(Song(
+                let created = Song(
                     title: raw.title,
                     artist: raw.artist,
                     albumTitle: raw.album,
@@ -108,7 +111,9 @@ enum LibraryRowBuilder {
                     relativePath: raw.relativePath,
                     album: album,
                     source: source
-                ))
+                )
+                modelContext.insert(created)
+                songsByPath[raw.relativePath] = created
             }
             seenSongs.insert(raw.relativePath)
 
@@ -171,8 +176,23 @@ enum LibraryRowBuilder {
         modelContext: ModelContext
     ) async throws -> Int {
         var deleted = 0
+        var duplicates = 0
 
-        for (path, song) in keptSongsByPath where !seenSongs.contains(path) {
+        // Walks the full lists, not the lookup tables.
+        //
+        // The tables hold one row per key — `uniquingKeysWith` keeps the first — so iterating
+        // them made a second row with the same path invisible to this pass: never visited, never
+        // deleted, and so permanent. That is why a duplicated song survived every resync. Going
+        // through every row means a duplicate is both found and removed.
+        //
+        // Songs first, then albums, then artists: deleting an album cascades to the songs still
+        // attached to it, and by this point every song the sync saw has been pointed at the row
+        // being kept.
+        for song in existing.allSongs {
+            let path = song.relativePath
+            let isTheRowBeingKept = keptSongsByPath[path]?.persistentModelID == song.persistentModelID
+            if seenSongs.contains(path), isTheRowBeingKept { continue }
+            if seenSongs.contains(path) { duplicates += 1 }
             modelContext.delete(song)
             deleted += 1
             if deleted.isMultiple(of: saveBatchSize) {
@@ -180,15 +200,25 @@ enum LibraryRowBuilder {
                 await Task.yield()
             }
         }
-        for (key, album) in keptAlbumsByKey where !seenAlbums.contains(key) {
+        for album in existing.allAlbums {
+            let key = AlbumKey(name: album.name, artistName: album.artist?.name ?? "")
+            let isTheRowBeingKept = keptAlbumsByKey[key]?.persistentModelID == album.persistentModelID
+            if seenAlbums.contains(key), isTheRowBeingKept { continue }
+            if seenAlbums.contains(key) { duplicates += 1 }
             modelContext.delete(album)
             deleted += 1
         }
-        for (name, artist) in keptArtistsByName where !seenArtists.contains(name) {
+        for artist in existing.allArtists {
+            let isTheRowBeingKept = keptArtistsByName[artist.name]?.persistentModelID == artist.persistentModelID
+            if seenArtists.contains(artist.name), isTheRowBeingKept { continue }
+            if seenArtists.contains(artist.name) { duplicates += 1 }
             modelContext.delete(artist)
             deleted += 1
         }
         try modelContext.save()
+        if duplicates > 0 {
+            print("LibraryRowBuilder: removed \(duplicates) duplicate row(s) that earlier syncs could not see")
+        }
         return deleted
     }
 

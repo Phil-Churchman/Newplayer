@@ -13,19 +13,24 @@ struct NowPlayingView: View {
             VStack(spacing: 24) {
                 if playback.isHostSyncingDatabase {
                     HostSyncingView()
-                } else if let song = playback.currentSong {
-                    SongArtworkView(song: song, size: .full, cornerRadius: 12)
+                } else if let item = playback.nowPlayingItem {
+                    // `nowPlayingItem`, not `currentSong`: in Spotify mode the track playing may
+                    // have no library row, and reading the library-backed queue left this screen
+                    // showing the last track the app itself started.
+                    NowPlayingArtworkView(item: item, size: .full, cornerRadius: 12)
                         .aspectRatio(1, contentMode: .fit)
-                        .padding(.horizontal, 32)
+                        .frame(maxWidth: .infinity)
 
                     VStack(spacing: 4) {
-                        Text(song.title)
+                        Text(item.title)
                             .font(.title2.bold())
                             .multilineTextAlignment(.center)
-                        Text(song.artist)
+                        Text(item.artist)
                             .font(.headline)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
+                    .frame(maxWidth: .infinity)
 
                     VStack(spacing: 4) {
                         Slider(
@@ -49,7 +54,6 @@ struct NowPlayingView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 32)
 
                     HStack(spacing: 48) {
                         Button {
@@ -79,11 +83,17 @@ struct NowPlayingView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
                 }
                 Spacer()
             }
             .padding(.top, 32)
+            // Applied once to the column rather than to each child: per-child insets are how the
+            // artwork, the track bar and the title ended up on three different left edges.
+            .padding(.horizontal, LayoutMetrics.horizontalPadding)
+            .frame(maxWidth: LayoutMetrics.maxPlayerWidth)
+            // Fills the rest of the width so the capped column sits centred rather than hard
+            // against the leading edge on an iPad.
+            .frame(maxWidth: .infinity)
             .artworkScope(artworkScope)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

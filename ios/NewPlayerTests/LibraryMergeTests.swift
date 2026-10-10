@@ -47,6 +47,78 @@ final class LibraryMergeTests: XCTestCase {
     /// Rows that haven't changed keep their identity. Under the old wipe every row was destroyed
     /// and rebuilt, which is what made a re-sync cost the size of the library rather than the
     /// size of the change.
+    // MARK: - Duplicates
+
+    /// A path arriving twice in one sync must produce one row. The lookup table was a snapshot
+    /// of what was already stored, so it never learned about rows inserted during the pass: the
+    /// second copy missed the lookup and was inserted alongside the first.
+    func testAPathArrivingTwiceInOneSyncProducesOneRow() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        try await LibraryRowBuilder.merge(
+            from: [raw("a"), raw("b"), raw("a", title: "A again")],
+            source: source,
+            modelContext: context
+        )
+
+        let songs = try context.fetch(FetchDescriptor<Song>())
+        XCTAssertEqual(songs.map(\.relativePath).sorted(), ["a", "b"])
+        // The later copy is applied to the one row rather than becoming a second.
+        XCTAssertEqual(songs.first { $0.relativePath == "a" }?.title, "A again")
+    }
+
+    /// The reported bug, and the half that mattered: duplicates already in the store survived
+    /// every resync. The deletion pass walked the lookup table, which holds one row per path, so
+    /// a second row with the same path was never visited and never deleted. A sync must clear it.
+    func testASyncRemovesDuplicateRowsAlreadyInTheStore() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        try await LibraryRowBuilder.merge(from: [raw("a"), raw("b")], source: source, modelContext: context)
+
+        // Stand in for however the duplicates got there: a second row with a path already held.
+        let album = try XCTUnwrap(try context.fetch(FetchDescriptor<Album>()).first)
+        let twin = Song(
+            title: "a", artist: "Alice", albumTitle: "Record", albumArtist: "Alice",
+            track: 1, duration: 200, relativePath: "a", album: album, source: source
+        )
+        context.insert(twin)
+        try context.save()
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Song>()).count, 3, "the store now holds a duplicate")
+
+        try await LibraryRowBuilder.merge(from: [raw("a"), raw("b")], source: source, modelContext: context)
+
+        let songs = try context.fetch(FetchDescriptor<Song>())
+        XCTAssertEqual(songs.count, 2, "the resync should have cleared the duplicate")
+        XCTAssertEqual(songs.map(\.relativePath).sorted(), ["a", "b"])
+    }
+
+    /// Duplicate albums and artists were immortal for the same reason, and a duplicate album
+    /// scatters a second copy of itself through the Albums list.
+    func testASyncRemovesDuplicateAlbumAndArtistRows() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        try await LibraryRowBuilder.merge(from: [raw("a")], source: source, modelContext: context)
+
+        let twinArtist = Artist(name: "Alice", source: source)
+        context.insert(twinArtist)
+        let twinAlbum = Album(name: "Record", artist: twinArtist, source: source)
+        context.insert(twinAlbum)
+        try context.save()
+
+        try await LibraryRowBuilder.merge(from: [raw("a")], source: source, modelContext: context)
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).count, 1)
+        // The song survives: it belongs to the row that was kept, not the one removed.
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Song>()).map(\.relativePath), ["a"])
+    }
+
     func testUnchangedSongsKeepTheirIdentity() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)

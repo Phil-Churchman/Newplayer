@@ -61,30 +61,19 @@ enum SourceInfoTopic: String, Identifiable {
             """
         case .spotifyOfflineMode:
             return """
-            Normally this app drives Spotify Connect, which is a web service. Commands go out to \
-            Spotify's servers and back to whichever device is playing — this phone, a desktop \
-            app, a speaker in another room. That is what lets the app run the queue, skip, \
-            pause, and follow along with whatever Spotify reports.
+            Online, this app drives Spotify Connect: commands go to Spotify's servers and back to \
+            whichever device is playing, and the app runs the queue, skip and pause.
 
-            With no connection, none of that is reachable. Offline mode stops trying: instead of \
-            sending commands into the void and waiting for each to time out, it opens the \
-            Spotify app at the track you picked, and Spotify plays it if it holds a download.
+            Offline mode instead opens the Spotify app at the track you pick, which plays it if \
+            it holds a download. There is no queue, skip and pause come from Spotify's own \
+            controls, and each track you pick opens the Spotify app again.
 
-            So offline you get one track at a time. There is no queue — building one goes through \
-            the same web service — and skip and pause have to come from Spotify's own controls \
-            rather than from here. Picking a track opens Spotify each time, because there is no \
-            connection left to reuse.
+            Browsing works either way: the library is stored on this device.
 
-            Browsing is unaffected either way: the library lives on this device, so artists, \
-            albums and songs are all there with or without a connection.
+            The app cannot tell which tracks Spotify has downloaded — Spotify provides no way to \
+            ask — so a track without a download won't start.
 
-            One thing the app cannot do is tell you which tracks Spotify has downloaded. Spotify \
-            provides no way to ask — not over the web, and not from the app on this phone — so a \
-            track that isn't downloaded simply won't start.
-
-            It is a switch rather than something automatic on purpose. "Online" is not the same \
-            question as "will Spotify play this", and a flaky connection turning the app's \
-            behaviour over without asking is worse than leaving it to you.
+            Offline mode is a manual switch and never turns on by itself.
             """
         case .spotify:
             return """

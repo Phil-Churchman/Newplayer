@@ -5,6 +5,14 @@ import XCTest
 final class ListScrollingUITests: XCTestCase {
     private let lastTrack = "Track 40"
 
+    /// How far below a bar's top edge the row beneath it may measure and still count as flush.
+    ///
+    /// "Flush" means the two edges land on the same point, and the arithmetic that gets there is
+    /// floating point: one run produced a row maxY of 845.0000000000003 against a bar minY of
+    /// 845.0 and failed a plain `>= 0`. A real row tucked behind a bar is out by points, so this
+    /// still catches the bug the file exists for.
+    private let flushTolerance: CGFloat = 0.5
+
     override func setUpWithError() throws {
         continueAfterFailure = false
     }
@@ -52,7 +60,7 @@ final class ListScrollingUITests: XCTestCase {
 
         let gap = miniPlayer.frame.minY - row.frame.maxY
         XCTAssertGreaterThanOrEqual(
-            gap, 0,
+            gap, -flushTolerance,
             "\(lastTrack)'s row (maxY \(row.frame.maxY)) is behind the mini player (minY \(miniPlayer.frame.minY))"
         )
         // Flush: the separator under the last row should land exactly on the bar's top edge.
@@ -76,7 +84,7 @@ final class ListScrollingUITests: XCTestCase {
 
         let gap = sourceBar.frame.minY - row.frame.maxY
         XCTAssertGreaterThanOrEqual(
-            gap, 0,
+            gap, -flushTolerance,
             "\(lastTrack)'s row (maxY \(row.frame.maxY)) is behind the source bar (minY \(sourceBar.frame.minY))"
         )
         XCTAssertLessThan(gap, 2, "the last row should rest flush against the source bar, but stops \(gap)pt above it")

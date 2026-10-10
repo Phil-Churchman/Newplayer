@@ -19,7 +19,7 @@ struct ActiveSourceBar: View {
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, LayoutMetrics.horizontalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: PersistentBarMetrics.sourceBarHeight)
         // Painted in the page background colour rather than a material: the bar is chrome, not a

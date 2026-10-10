@@ -38,8 +38,10 @@ enum SpotifyImportService {
             let albumTracks = try await client.fetchSavedAlbumTracks(accessToken: accessToken) { count in
                 Task { @MainActor in onProgress(likedTracks.count + count, likedTracks.count + count) }
             }
-            // A liked track from a saved album appears in both; keep one row per track.
-            let tracks = Self.deduplicated(likedTracks + albumTracks)
+            // A liked track from a saved album appears in both; keep one row per track. Twice
+            // over: once by id, then once by recording, because Spotify's per-market relinking
+            // hands the same recording back under two different ids.
+            let tracks = Self.collapsingRelinkedTracks(Self.deduplicated(likedTracks + albumTracks))
             print("""
             SpotifyImportService: \(likedTracks.count) liked, \(albumTracks.count) from saved \
             albums, \(tracks.count) after removing duplicates
@@ -80,6 +82,64 @@ enum SpotifyImportService {
     static func deduplicated(_ tracks: [SpotifyTrack]) -> [SpotifyTrack] {
         var seen = Set<String>()
         return tracks.filter { seen.insert($0.id).inserted }
+    }
+
+    /// One recording, one row — even when Spotify reports it under more than one id.
+    ///
+    /// Spotify relinks tracks per market, so the copy in Liked Songs and the copy on a saved
+    /// album can carry different ids for the same recording. `deduplicated` matches on the id,
+    /// so both survive it and both import: the song is then listed twice in its album, queued
+    /// twice when the album is played, and no resync can ever fix it, because every sync
+    /// legitimately reports both ids.
+    ///
+    /// The id kept is the first one seen, and liked tracks are passed in ahead of album tracks,
+    /// so what is stored is the id belonging to the copy the user actually saved. This is the
+    /// part to be careful with: an earlier attempt at matching on title/artist/album made a
+    /// *relinked* id the stored one, and a relinked id is not always playable when handed back
+    /// in a play request, which showed up as Spotify refusing to open the link. Hence the
+    /// first-wins rule and the log below, so a refusal can be traced to what was collapsed.
+    ///
+    /// The key is deliberately tight — same album, same track number, same title — so two
+    /// genuinely different songs have to agree on all three to be treated as one. Track numbers
+    /// repeat across the discs of a multi-disc album, which is why the title is in the key.
+    static func collapsingRelinkedTracks(_ tracks: [SpotifyTrack]) -> [SpotifyTrack] {
+        struct RecordingKey: Hashable {
+            let title: String
+            let album: String
+            let track: Int
+        }
+
+        func folded(_ value: String) -> String {
+            value.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        var keptIDByKey: [RecordingKey: String] = [:]
+        var kept: [SpotifyTrack] = []
+        var collapsed: [String] = []
+        kept.reserveCapacity(tracks.count)
+
+        for track in tracks {
+            let key = RecordingKey(
+                title: folded(track.title),
+                album: folded(track.albumName),
+                track: track.trackNumber
+            )
+            if let keptID = keptIDByKey[key] {
+                collapsed.append("\(track.title) [\(track.id) → \(keptID)]")
+            } else {
+                keptIDByKey[key] = track.id
+                kept.append(track)
+            }
+        }
+
+        if !collapsed.isEmpty {
+            print("""
+            SpotifyImportService: collapsed \(collapsed.count) relinked duplicate(s) — \
+            \(collapsed.prefix(10).joined(separator: ", "))\
+            \(collapsed.count > 10 ? ", …" : "")
+            """)
+        }
+        return kept
     }
 
     /// Same album-wide rules as the Music library import: the album artist names the release,

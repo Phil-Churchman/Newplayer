@@ -5,15 +5,17 @@ struct MiniPlayerBar: View {
     let onTap: () -> Void
 
     var body: some View {
-        if let song = playback.currentSong {
+        // The same authority the full player uses, so the two can't disagree about what is
+        // playing — and so a Spotify track with no library row still shows here.
+        if let item = playback.nowPlayingItem {
             HStack(spacing: 12) {
-                SongArtworkView(song: song, cornerRadius: 4)
+                NowPlayingArtworkView(item: item, cornerRadius: 4)
                     .frame(width: 44, height: 44)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(song.title)
+                    Text(item.title)
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1)
-                    Text(song.artist)
+                    Text(item.artist)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -32,7 +34,7 @@ struct MiniPlayerBar: View {
                         .font(.title3)
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, LayoutMetrics.horizontalPadding)
             .frame(height: PersistentBarMetrics.miniPlayerHeight)
             .background(.thinMaterial)
             .contentShape(Rectangle())

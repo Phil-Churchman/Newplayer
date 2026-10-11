@@ -451,6 +451,44 @@ final class SpotifyImportTests: XCTestCase {
         XCTAssertEqual(appRemote.activateCount, 1)
     }
 
+    /// The reported bug: Refresh Devices "not reliably switching playback on phone".
+    ///
+    /// Activation worked; the list was simply read a moment too early. Spotify's device list is
+    /// eventually consistent, so a device it has just registered is missing from the very next
+    /// read — and that one read was taken as the answer.
+    func testTheListIsRereadUntilThisPhoneAppears() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+        source.spotifyClientID = "abc"
+
+        let speaker = SpotifyDevice(id: "speaker", name: "Kitchen", isActive: false, isRestricted: false, type: "Speaker")
+        let phone = SpotifyDevice(id: "phone", name: "iPhone", isActive: true, isRestricted: false, type: "Smartphone")
+
+        let client = FakeSpotifyClient()
+        // Nothing active to begin with, so activation runs; the phone only shows on the third read.
+        client.deviceReads = [[speaker], [speaker], [speaker], [speaker, phone]]
+
+        let appRemote = FakeSpotifyAppRemote()
+        let viewModel = SourcesViewModel(
+            spotifyAuth: FakeSpotifyAuth(),
+            spotifyClient: client,
+            spotifyTokens: InMemorySpotifyTokenStore(tokens: SpotifyTokens(
+                accessToken: "t", refreshToken: "r",
+                expiresAt: Date().addingTimeInterval(3600),
+                scopes: SpotifyAuth.requiredScopes
+            )),
+            spotifyAppRemote: appRemote
+        )
+
+        viewModel.loadSpotifyDevices(source: source, activatingThisPhone: true)
+        await waitUntil { viewModel.spotifyDevices.contains(where: \.isPhone) }
+
+        XCTAssertEqual(appRemote.activateCount, 1)
+        XCTAssertEqual(viewModel.spotifyDevices.map(\.name), ["Kitchen", "iPhone"],
+                       "the list shown is the one that includes this phone")
+    }
+
     /// Something already playing is left alone.
     func testRefreshingDevicesLeavesAnActiveDeviceAlone() async throws {
         let container = try makeContainer()

@@ -177,11 +177,26 @@ final class SpotifyAppRemote: NSObject, SpotifyAppRemoteControlling {
         let remote = remote(for: clientID)
         remote.connectionParameters.accessToken = accessToken
 
-        // Already connected means the Spotify app is up and this phone is the active device;
-        // bouncing the user to it would achieve nothing.
+        // A live App Remote connection means the Spotify app is running and reachable. It does
+        // *not* mean this phone is Spotify's active device, which is the whole point of
+        // activating — playback can sit on a desktop app or a speaker while this socket is
+        // open. Taking the connection as proof and returning here is why Refresh Devices so
+        // often appeared to do nothing at all.
+        //
+        // Driving the open connection is also the better outcome when it works: resuming makes
+        // the Spotify app on this phone the device Spotify is playing to, and pausing stops the
+        // music again, with no trip out to Spotify and back.
         if remote.isConnected {
-            print("SpotifyAppRemote: already connected — this phone is active already")
-            return
+            do {
+                try await playerCall { $0.resume($1) }
+                try await playerCall { $0.pause($1) }
+                print("SpotifyAppRemote: made this phone active over the connection already open")
+                return
+            } catch {
+                // Nothing to resume, or the app has gone away behind a stale socket. Fall
+                // through and launch, which is the path that can recover either.
+                print("SpotifyAppRemote: the open connection wouldn't take it, relaunching — \(error)")
+            }
         }
 
         // `authorizeAndPlayURI` is the only way to wake the Spotify app and have Spotify

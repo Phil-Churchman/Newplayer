@@ -202,7 +202,7 @@ final class SourcesViewModel: ObservableObject {
                             clientID: source.spotifyClientID,
                             accessToken: token
                         )
-                        devices = try await self.spotifyClient.fetchDevices(accessToken: token)
+                        devices = try await self.devicesOnceThisPhoneAppears(accessToken: token)
                     } catch {
                         // Not worth reporting: the list below is still whatever Spotify knows,
                         // which is what was asked for.
@@ -237,6 +237,31 @@ final class SourcesViewModel: ObservableObject {
     static func deviceHint(for devices: [SpotifyDevice]) -> String? {
         guard devices.isEmpty else { return nil }
         return "Spotify reports no devices. Open the Spotify app on the device you want to play on and start any track once, then tap Refresh Devices."
+    }
+
+    /// How many times to re-read the device list after activating, and how long to leave
+    /// between reads.
+    @ObservationIgnored
+    private static let deviceAppearanceAttempts = 4
+    @ObservationIgnored
+    private static let deviceAppearanceSpacingNanoseconds: UInt64 = 600_000_000
+
+    /// Re-reads the device list until this phone shows up in it.
+    ///
+    /// Spotify's device list is eventually consistent: a device it has only just registered is
+    /// not in the very next read. Taking that one read as the answer is the other half of why
+    /// Refresh Devices looked unreliable — the activation had worked, and the list shown was
+    /// simply taken a moment too early.
+    private func devicesOnceThisPhoneAppears(accessToken: String) async throws -> [SpotifyDevice] {
+        var devices = try await spotifyClient.fetchDevices(accessToken: accessToken)
+        for attempt in 0..<Self.deviceAppearanceAttempts where !devices.contains(where: \.isPhone) {
+            try? await Task.sleep(nanoseconds: Self.deviceAppearanceSpacingNanoseconds)
+            devices = try await spotifyClient.fetchDevices(accessToken: accessToken)
+            if devices.contains(where: \.isPhone) {
+                print("SourcesViewModel: this phone appeared in the device list on read \(attempt + 2)")
+            }
+        }
+        return devices
     }
 
     /// Pins playback to one device, or back to automatic when nil. Remembered on the source so

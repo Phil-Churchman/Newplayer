@@ -99,9 +99,21 @@ final class FakeSpotifyClient: SpotifyAPIClient, @unchecked Sendable {
         return queueSnapshot
     }
 
+    /// Device lists to hand back in order, for the eventual consistency Spotify really shows:
+    /// a device it has just registered is not in the very next read. The last entry is reused
+    /// once the sequence runs out.
+    var deviceReads: [[SpotifyDevice]]?
+    private(set) var deviceReadCount = 0
+
     func fetchDevices(accessToken: String) async throws -> [SpotifyDevice] {
-        lock.lock(); commands.append("fetchDevices"); lock.unlock()
-        return devices
+        lock.lock()
+        commands.append("fetchDevices")
+        deviceReadCount += 1
+        let reads = deviceReads
+        let index = deviceReadCount - 1
+        lock.unlock()
+        guard let reads, !reads.isEmpty else { return devices }
+        return reads[min(index, reads.count - 1)]
     }
 
     func play(trackURIs: [String], startAt index: Int, deviceID: String?, accessToken: String) async throws {

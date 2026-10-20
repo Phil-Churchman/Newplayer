@@ -142,16 +142,30 @@ enum SpotifyImportService {
         return kept
     }
 
-    /// Same album-wide rules as the Music library import: the album artist names the release,
-    /// an album crediting several track artists is a "Compilation", and the cover belongs to
-    /// the album rather than to each track.
+    /// Same album-wide rules as the Music library import: the album artist names the release
+    /// per `AlbumArtistRule`, each track keeps its own performer, and the cover belongs to the
+    /// album rather than to each track.
     static func makeRawSongs(from tracks: [SpotifyTrack]) -> [RawSong] {
-        let grouped = Dictionary(grouping: tracks, by: \.albumID)
+        // By title first, then split into the albums those tracks actually belong to — see
+        // `AlbumArtistRule.albumComponents`. Spotify's per-market relinking hands one release
+        // back under different album ids, so the id alone would split it.
+        let grouped = Dictionary(grouping: tracks) { AlbumArtistRule.albumTitle($0.albumName) }
+            .values
+            .flatMap {
+                AlbumArtistRule.albumComponents(
+                    $0,
+                    id: \.albumID,
+                    albumArtist: { track in
+                        track.albumArtistNames.compactMap { AlbumArtistRule.trimmed($0) }
+                            .joined(separator: ", ")
+                    }
+                )
+            }
 
         var rows: [RawSong] = []
         rows.reserveCapacity(tracks.count)
 
-        for (_, albumTracks) in grouped {
+        for albumTracks in grouped {
             let ordered = albumTracks.sorted { $0.trackNumber < $1.trackNumber }
             let albumName = ordered.first?.albumName.nilIfBlank ?? "Unknown Album"
             let albumArtist = albumArtistName(for: ordered)
@@ -171,7 +185,7 @@ enum SpotifyImportService {
                     // Safe to vary within an album because LibraryRowBuilder builds its Artist
                     // and Album rows from `albumArtist` alone. The per-track name is carried on
                     // the Song and changes no grouping.
-                    artist: trackArtistName(for: track) ?? albumArtist,
+                    artist: AlbumArtistRule.trackArtist(trackArtistName(for: track), inAlbumBy: albumArtist),
                     album: albumName,
                     albumArtist: albumArtist,
                     track: track.trackNumber,
@@ -188,14 +202,18 @@ enum SpotifyImportService {
 
     /// The one name an album is filed under. Every track in the album shares it, because it is
     /// what the Artist and Album rows are keyed on — it decides grouping, not display.
+    /// Follows `AlbumArtistRule`, from Spotify's own album-artist credits.
+    ///
+    /// Several credits on one release — a collaboration — are joined rather than treated as a
+    /// disagreement: they are that album's artist, together.
     static func albumArtistName(for albumTracks: [SpotifyTrack]) -> String {
-        let trackArtists = Set(albumTracks.compactMap { $0.artistNames.first?.nilIfBlank })
-        if trackArtists.count > 1 {
-            return "Compilation"
-        }
-        return albumTracks.first?.albumArtistNames.first?.nilIfBlank
-            ?? trackArtists.first
-            ?? "Unknown Artist"
+        AlbumArtistRule.groupingArtist(
+            albumArtists: albumTracks.map { track in
+                let names = track.albumArtistNames.compactMap { AlbumArtistRule.trimmed($0) }
+                return names.isEmpty ? nil : names.joined(separator: ", ")
+            },
+            trackArtists: albumTracks.map { trackArtistName(for: $0) }
+        )
     }
 
     /// Everyone credited on a single track, in Spotify's own order.

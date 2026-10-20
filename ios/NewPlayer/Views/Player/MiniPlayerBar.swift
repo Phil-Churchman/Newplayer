@@ -7,7 +7,7 @@ struct MiniPlayerBar: View {
     var body: some View {
         // The same authority the full player uses, so the two can't disagree about what is
         // playing — and so a Spotify track with no library row still shows here.
-        if let item = playback.nowPlayingItem {
+        if playback.isPlayerAvailable, let item = playback.nowPlayingItem {
             HStack(spacing: 12) {
                 NowPlayingArtworkView(item: item, cornerRadius: 4)
                     .frame(width: 44, height: 44)

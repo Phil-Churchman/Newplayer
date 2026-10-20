@@ -65,16 +65,52 @@ enum LibraryImportService {
 
             rawSongs.append(RawSong(
                 title: metadata.title,
-                artist: metadata.artist,
+                // Raw tags for now, both of them; the pass below decides the album's artist and
+                // then fills any gap on the track from it. The resolved `metadata.artist` would
+                // hand that pass "Unknown Artist" as though it were a name.
+                artist: metadata.artistTag ?? "",
                 album: metadata.album,
-                albumArtist: metadata.albumArtist,
+                // The raw tag for now; the pass below replaces it with the one name the whole
+                // album groups under. It cannot be decided here, where files arrive one at a
+                // time and the album is only complete once the scan has moved past it.
+                albumArtist: metadata.albumArtistTag ?? "",
                 track: metadata.track,
                 duration: metadata.duration,
                 relativePath: relativePath,
                 artworkData: artworkData
             ))
         }
-        return rawSongs
+        return withAlbumArtistsResolved(rawSongs)
+    }
+
+    /// Applies `AlbumArtistRule` across each album, after the streaming scan has seen all of it.
+    ///
+    /// Grouped by title, then split into components linked by containing folder or album
+    /// artist — see `AlbumArtistRule.albumComponents`. A local library has no album id, so the
+    /// folder stands in for one; linking on the artist as well keeps a record that spans two
+    /// folders (a disc each) together.
+    private static func withAlbumArtistsResolved(_ rawSongs: [RawSong]) -> [RawSong] {
+        let grouped = Dictionary(grouping: rawSongs) { AlbumArtistRule.albumTitle($0.album) }
+            .values
+            .flatMap {
+                AlbumArtistRule.albumComponents(
+                    $0,
+                    id: { ($0.relativePath as NSString).deletingLastPathComponent },
+                    albumArtist: { $0.albumArtist }
+                )
+            }
+        return grouped.flatMap { album -> [RawSong] in
+            let albumArtist = AlbumArtistRule.groupingArtist(
+                albumArtists: album.map { $0.albumArtist },
+                trackArtists: album.map { $0.artist }
+            )
+            return album.map { song in
+                var resolved = song
+                resolved.albumArtist = albumArtist
+                resolved.artist = AlbumArtistRule.trackArtist(song.artist, inAlbumBy: albumArtist)
+                return resolved
+            }
+        }
     }
 
     private static let coverFileNames: Set<String> = ["cover.jpg", "cover.jpeg"]

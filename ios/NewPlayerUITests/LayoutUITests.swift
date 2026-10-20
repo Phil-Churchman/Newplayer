@@ -74,6 +74,7 @@ final class LayoutUITests: XCTestCase {
         row.tap()
 
         XCTAssertTrue(app.otherElements["activeSourceBar"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Local Folder"].exists, "the source indicator names the source")
+        XCTAssertTrue(app.staticTexts["Local files"].exists,
+                      "the source indicator names the source, in the Sources tab's words")
     }
 }

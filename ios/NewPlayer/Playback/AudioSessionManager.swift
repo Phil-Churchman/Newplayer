@@ -4,6 +4,12 @@ import Foundation
 final class AudioSessionManager {
     static let shared = AudioSessionManager()
 
+    /// Claiming and handing back the session are synchronous calls into the audio daemon, and
+    /// AVAudioSession warns that running them on the main thread can make the interface
+    /// unresponsive. Serial, so an activate and a deactivate cannot overtake each other and
+    /// leave the session in the state the earlier call asked for.
+    private let sessionQueue = DispatchQueue(label: "newplayer.audio-session")
+
     var onInterruptionBegan: (() -> Void)?
     var onRouteChangedDeviceUnavailable: (() -> Void)?
 
@@ -30,13 +36,20 @@ final class AudioSessionManager {
     /// thing the app is trying to keep playing. Claiming the session up front, before there is
     /// anything to play, is what made controlling Spotify on this device fight itself while
     /// controlling Spotify on a Mac was unaffected.
-    func activate() {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default)
-            try session.setActive(true)
-        } catch {
-            // Non-fatal: playback will still attempt to proceed.
+    /// - Parameter then: run on the main actor once the session is claimed. Playback starts
+    ///   here rather than at the call site, because starting it before the session is active
+    ///   is what the activation was for.
+    func activate(then body: (@MainActor @Sendable () -> Void)? = nil) {
+        sessionQueue.async {
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback, mode: .default)
+                try session.setActive(true)
+            } catch {
+                // Non-fatal: playback will still attempt to proceed.
+            }
+            guard let body else { return }
+            Task { @MainActor in body() }
         }
     }
 
@@ -44,10 +57,14 @@ final class AudioSessionManager {
     /// typically — is told it may resume. Without `notifyOthersOnDeactivation` it is never
     /// prompted to, and stays silent until the user restarts it by hand.
     func deactivate() {
-        do {
-            try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
-        } catch {
-            // Non-fatal: nothing the user can act on, and playback state is unaffected.
+        // Nothing waits on this, and it is the expensive one: `notifyOthersOnDeactivation` has
+        // to reach every other app that wants the session back.
+        sessionQueue.async {
+            do {
+                try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+            } catch {
+                // Non-fatal: nothing the user can act on, and playback state is unaffected.
+            }
         }
     }
 

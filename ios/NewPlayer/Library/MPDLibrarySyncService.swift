@@ -25,18 +25,36 @@ enum MPDLibrarySyncService {
             let mpdSongs = try await client.fetchAllSongs()
             print("MPDLibrarySyncService: found \(mpdSongs.count) song(s) on the server")
 
-            let rawSongs = mpdSongs.map { info -> RawSong in
-                let resolvedArtist = info.artist.nilIfBlank ?? "Unknown Artist"
-                return RawSong(
-                    title: info.title.nilIfBlank ?? ((info.file as NSString).lastPathComponent as NSString).deletingPathExtension,
-                    artist: resolvedArtist,
-                    album: info.album.nilIfBlank ?? "Unknown Album",
-                    albumArtist: info.albumArtist.nilIfBlank ?? resolvedArtist,
-                    track: info.track ?? 0,
-                    duration: info.duration,
-                    relativePath: info.file,
-                    artworkData: nil
+            // Grouped before the rows are built, because the album artist follows
+            // `AlbumArtistRule` and that needs the album seen whole. By title, then split into
+            // components linked by directory or album artist — MPD has no album id of its own,
+            // and a directory is where a file-based library draws an album's boundary.
+            let albums = Dictionary(grouping: mpdSongs) { AlbumArtistRule.albumTitle($0.album) }
+                .values
+                .flatMap {
+                    AlbumArtistRule.albumComponents(
+                        $0,
+                        id: { ($0.file as NSString).deletingLastPathComponent },
+                        albumArtist: \.albumArtist
+                    )
+                }
+            let rawSongs = albums.flatMap { group -> [RawSong] in
+                let albumArtist = AlbumArtistRule.groupingArtist(
+                    albumArtists: group.map(\.albumArtist),
+                    trackArtists: group.map(\.artist)
                 )
+                return group.map { info in
+                    RawSong(
+                        title: info.title.nilIfBlank ?? ((info.file as NSString).lastPathComponent as NSString).deletingPathExtension,
+                        artist: AlbumArtistRule.trackArtist(info.artist, inAlbumBy: albumArtist),
+                        album: info.album.nilIfBlank ?? "Unknown Album",
+                        albumArtist: albumArtist,
+                        track: info.track ?? 0,
+                        duration: info.duration,
+                        relativePath: info.file,
+                        artworkData: nil
+                    )
+                }
             }
             try await LibraryRowBuilder.merge(from: rawSongs, source: source, modelContext: modelContext, onProgress: onProgress)
 

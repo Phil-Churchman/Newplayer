@@ -6,6 +6,17 @@ struct ExtractedMetadata {
     var artist: String
     var album: String
     var albumArtist: String
+    /// The artist tag exactly as the file carried it, nil when it has none. `artist` above
+    /// substitutes "Unknown Artist" so a song always has something to show, which would read as
+    /// a real name to `AlbumArtistRule` and make a folder of untagged files an album by
+    /// "Unknown Artist" rather than a compilation.
+    var artistTag: String?
+    /// The album-artist tag exactly as the file carried it, nil when it has none.
+    ///
+    /// `albumArtist` above substitutes the track artist so there is always something to group
+    /// by, which hides whether the tag was there at all — and `AlbumArtistRule` needs to know,
+    /// because an album no track names an artist for is a compilation.
+    var albumArtistTag: String?
     var track: Int
     var duration: TimeInterval
     var artworkData: Data?
@@ -57,6 +68,8 @@ enum MetadataExtractor {
             artist: resolvedArtist,
             album: resolvedAlbum,
             albumArtist: resolvedAlbumArtist,
+            artistTag: nonBlank(artist),
+            albumArtistTag: nonBlank(albumArtist),
             track: track ?? 0,
             duration: duration,
             artworkData: artworkData

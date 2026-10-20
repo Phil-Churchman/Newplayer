@@ -43,10 +43,11 @@ private struct MiniPlayerContentInset: ViewModifier {
         // The source bar is always there; the mini player only when something is queued.
         // Reserving both lands the last row's bottom edge exactly on the top of whichever
         // bar is uppermost.
-        // Keyed off the same value the bar itself shows from, or the two disagree: a Spotify
-        // track with no library row puts the bar on screen while this reserved nothing for it,
-        // which is the last row of a list sitting behind it.
-        let miniPlayer = playback.nowPlayingItem == nil ? 0 : PersistentBarMetrics.miniPlayerHeight
+        // Keyed off exactly what the bar itself shows from, or the two disagree: reserving room
+        // for a bar that isn't there leaves a blank strip under every list, and not reserving
+        // for one that is leaves the last row tucked behind it.
+        let showsMiniPlayer = playback.isPlayerAvailable && playback.nowPlayingItem != nil
+        let miniPlayer = showsMiniPlayer ? PersistentBarMetrics.miniPlayerHeight : 0
         return content.contentMargins(
             .bottom,
             PersistentBarMetrics.sourceBarHeight + miniPlayer,

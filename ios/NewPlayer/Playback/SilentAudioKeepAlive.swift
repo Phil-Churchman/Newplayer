@@ -25,21 +25,34 @@ protocol NowPlayingSessionHolding: AnyObject {
 @MainActor
 final class SilentAudioKeepAlive: NowPlayingSessionHolding {
     private var player: AVAudioPlayer?
+    /// Set between asking for the session and the silence actually starting.
+    private var isStarting = false
 
     var isRunning: Bool { player?.isPlaying ?? false }
 
     func start() {
-        guard player == nil else { return }
+        // `isStarting` as well as `player`: the player is only assigned once the session has
+        // been claimed, so two calls in quick succession would both pass a `player == nil`
+        // check and the second would orphan the first, leaving it playing silence forever.
+        guard player == nil, !isStarting else { return }
+        isStarting = true
         guard !AVAudioSession.sharedInstance().isOtherAudioPlaying else {
             print("SilentAudioKeepAlive: another app is playing audio — not claiming the session")
+            isStarting = false
             return
         }
 
         // The session is no longer claimed at launch, so the silence that holds the widget has
         // to claim it here. Guarded by the `isOtherAudioPlaying` check above, which is what
         // keeps this from interrupting anything — including Spotify on this same phone.
-        AudioSessionManager.shared.activate()
+        AudioSessionManager.shared.activate { [weak self] in
+            self?.startSilence()
+        }
+    }
 
+    /// Runs once the session is claimed — silence that starts before it does nothing.
+    private func startSilence() {
+        defer { isStarting = false }
         do {
             let player = try AVAudioPlayer(data: Self.silentWAVData())
             player.numberOfLoops = -1

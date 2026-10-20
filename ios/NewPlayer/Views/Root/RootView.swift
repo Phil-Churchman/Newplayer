@@ -20,7 +20,13 @@ struct RootView: View {
 
     var body: some View {
         layout
-            .fullScreenCover(isPresented: $showNowPlaying) {
+            // Gated as well as unreachable: the mini player is the only way to open this, and
+            // it is hidden offline — but a mode switch while the player is open would otherwise
+            // leave it up with nothing behind it.
+            .fullScreenCover(isPresented: Binding(
+                get: { showNowPlaying && playback.isPlayerAvailable },
+                set: { showNowPlaying = $0 }
+            )) {
                 NowPlayingView {
                     showNowPlaying = false
                 }

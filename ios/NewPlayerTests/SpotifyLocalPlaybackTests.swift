@@ -50,6 +50,30 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         )
     }
 
+    /// Offline mode hands each track to the Spotify app and cannot run the queue or the
+    /// transport, so the mini player and the full player are hidden rather than shown with
+    /// controls that do nothing.
+    func testThePlayerIsHiddenInOfflineMode() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = PlaybackManager(spotify: remote)
+        let source = spotifySource()
+        source.isOfflineMode = true
+        manager.setActiveSource(source)
+        await settle()
+
+        XCTAssertFalse(manager.isPlayerAvailable, "offline there is nothing for the player to drive")
+    }
+
+    /// Online it is there as usual.
+    func testThePlayerIsAvailableOnline() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = PlaybackManager(spotify: remote)
+        manager.setActiveSource(spotifySource())
+        await settle()
+
+        XCTAssertTrue(manager.isPlayerAvailable)
+    }
+
     func testAPlayThatActuallyStartedNeedsNoFallback() async {
         let remote = FakeSpotifyPlayback()
         remote.state = playingState()

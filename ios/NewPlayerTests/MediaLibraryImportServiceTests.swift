@@ -165,30 +165,28 @@ final class MediaLibraryImportServiceTests: XCTestCase {
     // MARK: - Album artist, compilations, and album covers
 
     /// iTunes libraries are tagged album-first: the per-track artist is often a featured credit,
-    /// and using it splits a release across the Artists list.
-    func testTheAlbumArtistIsUsedAsTheArtist() async throws {
+    /// and grouping by it splits a release across the Artists list. The album artist is what the
+    /// album groups under — and the track credit is what each song keeps.
+    func testTheAlbumArtistGroupsTheAlbumAndTheTrackKeepsItsOwn() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
 
         let library = FakeMediaLibrary()
-        // One consistent track credit that differs from the album artist — the album artist wins.
         library.addTrack(id: "1", title: "One", artist: "Alice & The Band", album: "Record", albumArtist: "Alice", track: 1)
         library.addTrack(id: "2", title: "Two", artist: "Alice & The Band", album: "Record", albumArtist: "Alice", track: 2)
 
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
         let songs = try context.fetch(FetchDescriptor<Song>())
-        XCTAssertEqual(Set(songs.map(\.artist)), ["Alice"], "the album artist, not the track credit")
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Alice"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Alice"], "one artist row")
+        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Alice"])
+        XCTAssertEqual(Set(songs.map(\.artist)), ["Alice & The Band"], "the track credit is not overwritten")
     }
 
-    /// Documents a consequence of the compilation rule rather than endorsing it: the rule keys
-    /// purely on the number of distinct *track* artists, so a single-artist album carrying one
-    /// "feat." credit is labelled a compilation too, even though every track shares an album
-    /// artist. Whether that is wanted depends on how the library tags featured guests — if they
-    /// live in the track title rather than the artist field, this never fires.
-    func testAFeaturedCreditAlsoCountsAsMultipleTrackArtists() async throws {
+    /// The rule reads the album-artist tag, not the track artists. A guest credit used to make
+    /// the whole record a compilation, which mislabelled any album with a feature on it.
+    func testAFeaturedCreditDoesNotMakeAnAlbumACompilation() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
@@ -199,11 +197,14 @@ final class MediaLibraryImportServiceTests: XCTestCase {
 
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
-        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Compilation"])
+        let songs = try context.fetch(FetchDescriptor<Song>())
+        XCTAssertEqual(Set(songs.map(\.albumArtist)), ["Alice"], "the album artist they agree on")
+        XCTAssertEqual(Set(songs.map(\.artist)), ["Alice feat. Bob", "Alice"], "each track keeps its own")
     }
 
-    /// A Various Artists record would otherwise appear once per guest in the Artists list.
-    func testAnAlbumWithSeveralTrackArtistsBecomesACompilation() async throws {
+    /// A Various Artists record tagged as such is that artist, not a compilation: the tracks
+    /// agree on an album artist, which is all the rule asks.
+    func testAnAlbumWhoseTracksAgreeOnTheirAlbumArtistUsesIt() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
@@ -216,45 +217,86 @@ final class MediaLibraryImportServiceTests: XCTestCase {
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
         let songs = try context.fetch(FetchDescriptor<Song>())
-        XCTAssertEqual(songs.count, 3)
-        XCTAssertEqual(Set(songs.map(\.artist)), ["Compilation"], "every track in the album, not just some")
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Various"])
         XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
+        // The point of the change: who actually played each song survives the import.
+        XCTAssertEqual(Set(songs.map(\.artist)), ["Alice", "Bob", "Carol"])
     }
 
-    /// One artist across the album is an ordinary record, however it is tagged.
-    func testAnAlbumWithOneTrackArtistIsNotACompilation() async throws {
+    /// No album artist, but one performer throughout: the record is that artist's. Calling it a
+    /// compilation would have swamped the Artists list in a patchily tagged library.
+    func testAnUntaggedAlbumByOneArtistUsesThatArtist() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
 
         let library = FakeMediaLibrary()
-        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Record", albumArtist: "Alice", track: 1)
-        library.addTrack(id: "2", title: "Two", artist: "Alice", album: "Record", albumArtist: "Alice", track: 2)
+        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Record", albumArtist: nil, track: 1)
+        library.addTrack(id: "2", title: "Two", artist: "Alice", album: "Record", albumArtist: nil, track: 2)
 
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
-        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Alice"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Alice"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Alice"])
     }
 
-    /// Compilations are decided per album — a mixed record must not drag a normal one with it.
+    /// No album artist and the performers differ: a compilation, and one album.
+    func testAnUntaggedAlbumWithSeveralPerformersIsACompilation() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let library = FakeMediaLibrary()
+        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Record", albumID: "rec", albumArtist: nil, track: 1)
+        library.addTrack(id: "2", title: "Two", artist: "Bob", album: "Record", albumID: "rec", albumArtist: nil, track: 2)
+
+        try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Alice", "Bob"])
+    }
+
+    /// Album artists that disagree across one album: a compilation, and crucially *one* album.
+    /// Renaming every track "Compilation" is what keeps it together — they all then key to the
+    /// same Album row instead of one row per artist.
+    func testAnAlbumWhoseAlbumArtistsDisagreeIsOneCompilation() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let library = FakeMediaLibrary()
+        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Split", albumID: "rec", albumArtist: "Alice", track: 1)
+        library.addTrack(id: "2", title: "Two", artist: "Bob", album: "Split", albumID: "rec", albumArtist: "Bob", track: 2)
+
+        try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
+
+        let albums = try context.fetch(FetchDescriptor<Album>())
+        XCTAssertEqual(albums.count, 1, "one album, not one per artist")
+        XCTAssertEqual(albums.first?.songs.count, 2)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Compilation"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Alice", "Bob"])
+    }
+
+    /// Decided per album — one record must not drag another with it.
     func testOnlyTheCompilationAlbumIsAffected() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
 
         let library = FakeMediaLibrary()
-        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Mixtape", albumID: "mix", albumArtist: "Various", track: 1)
-        library.addTrack(id: "2", title: "Two", artist: "Bob", album: "Mixtape", albumID: "mix", albumArtist: "Various", track: 2)
+        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Mixtape", albumID: "mix", albumArtist: nil, track: 1)
+        library.addTrack(id: "2", title: "Two", artist: "Bob", album: "Mixtape", albumID: "mix", albumArtist: nil, track: 2)
         library.addTrack(id: "3", title: "Solo", artist: "Carol", album: "Carol's Record", albumID: "solo", albumArtist: "Carol", track: 1)
 
         try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
 
         let songs = try context.fetch(FetchDescriptor<Song>())
-        let byTitle = Dictionary(uniqueKeysWithValues: songs.map { ($0.title, $0.artist) })
-        XCTAssertEqual(byTitle["One"], "Compilation")
-        XCTAssertEqual(byTitle["Two"], "Compilation")
-        XCTAssertEqual(byTitle["Solo"], "Carol")
+        let albumArtists = Dictionary(uniqueKeysWithValues: songs.map { ($0.title, $0.albumArtist) })
+        XCTAssertEqual(albumArtists["One"], "Compilation")
+        XCTAssertEqual(albumArtists["Two"], "Compilation")
+        XCTAssertEqual(albumArtists["Solo"], "Carol")
     }
 
     /// The cover comes from track 1, and every track in the album shows it — the library hands
@@ -285,7 +327,26 @@ final class MediaLibraryImportServiceTests: XCTestCase {
         XCTAssertEqual(library.artworkRenderCount, 1, "one render for the album, from its first track")
     }
 
-    /// Two releases sharing a name are kept apart by the library's own album identity.
+    /// The reported split: Apple Music gives different album IDs to tracks of one album added
+    /// by different routes — some purchased, some matched — and grouping on that ID showed the
+    /// record twice. Title and album artist hold it together.
+    func testOneAlbumWithDifferentAlbumIDsStaysOneAlbum() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let library = FakeMediaLibrary()
+        library.addTrack(id: "1", title: "One", artist: "Alice", album: "Record", albumID: "bought", albumArtist: "Alice", track: 1)
+        library.addTrack(id: "2", title: "Two", artist: "Alice", album: "Record", albumID: "matched", albumArtist: "Alice", track: 2)
+
+        try await MediaLibraryImportService.rescan(source: source, provider: library, modelContext: context)
+
+        let albums = try context.fetch(FetchDescriptor<Album>())
+        XCTAssertEqual(albums.count, 1, "one album, however the library filed its tracks")
+        XCTAssertEqual(albums.first?.songs.count, 2)
+    }
+
+    /// Two releases sharing a name are kept apart by their album artists.
     func testTwoAlbumsWithTheSameNameAreNotMerged() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)

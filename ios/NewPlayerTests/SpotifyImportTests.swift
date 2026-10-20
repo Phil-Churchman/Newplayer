@@ -65,8 +65,31 @@ final class SpotifyImportTests: XCTestCase {
         XCTAssertEqual(song.relativePath, "spotify-track-42")
     }
 
-    /// Same album-wide rules as the Music library import.
-    func testAnAlbumWithSeveralTrackArtistsBecomesACompilation() async throws {
+    /// The same split on Spotify's side: per-market relinking hands one release back under
+    /// different album ids, which showed the album twice.
+    func testOneAlbumWithDifferentAlbumIDsStaysOneAlbum() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let client = FakeSpotifyClient()
+        client.tracks = [
+            .make(id: "1", title: "One", artist: "Alice", album: "Record", albumID: "gb", albumArtist: "Alice", track: 1),
+            .make(id: "2", title: "Two", artist: "Alice", album: "Record", albumID: "us", albumArtist: "Alice", track: 2),
+        ]
+
+        try await SpotifyImportService.rescan(
+            source: source, client: client, accessToken: "token", modelContext: context
+        )
+
+        let albums = try context.fetch(FetchDescriptor<Album>())
+        XCTAssertEqual(albums.count, 1, "one album, whichever market Spotify answered from")
+        XCTAssertEqual(albums.first?.songs.count, 2)
+    }
+
+    /// Same album-wide rule as every other source: tracks agreeing on an album artist use it,
+    /// however many different performers the record credits.
+    func testAnAlbumWhoseTracksAgreeOnTheirAlbumArtistUsesIt() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
@@ -81,13 +104,56 @@ final class SpotifyImportTests: XCTestCase {
             source: source, client: client, accessToken: "token", modelContext: context
         )
 
-        // Filed as one compilation: a single Artist row, and one Album under it.
-        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Compilation"])
-        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
+        // Filed as one record: a single Artist row, and one Album under it.
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.albumArtist)), ["Various"])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Various"])
         XCTAssertEqual(try context.fetch(FetchDescriptor<Album>()).count, 1)
     }
 
-    /// Filing an album as a compilation must not cost the tracks their performers.
+    /// Disagreeing album artists across one album: one compilation, not one album per artist.
+    func testAnAlbumWhoseAlbumArtistsDisagreeIsOneCompilation() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let client = FakeSpotifyClient()
+        client.tracks = [
+            .make(id: "1", title: "One", artist: "Alice", album: "Split", albumID: "rec", albumArtist: "Alice", track: 1),
+            .make(id: "2", title: "Two", artist: "Bob", album: "Split", albumID: "rec", albumArtist: "Bob", track: 2),
+        ]
+
+        try await SpotifyImportService.rescan(
+            source: source, client: client, accessToken: "token", modelContext: context
+        )
+
+        let albums = try context.fetch(FetchDescriptor<Album>())
+        XCTAssertEqual(albums.count, 1, "one album, not one per artist")
+        XCTAssertEqual(albums.first?.songs.count, 2)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Alice", "Bob"])
+    }
+
+    /// And when Spotify names no album artist at all, it is a compilation.
+    func testAnAlbumWithNoAlbumArtistIsACompilation() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+
+        let client = FakeSpotifyClient()
+        client.tracks = [
+            .make(id: "1", title: "One", artist: "Alice", albumID: "mix", albumArtist: "", track: 1),
+            .make(id: "2", title: "Two", artist: "Bob", albumID: "mix", albumArtist: "", track: 2),
+        ]
+
+        try await SpotifyImportService.rescan(
+            source: source, client: client, accessToken: "token", modelContext: context
+        )
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Artist>()).map(\.name), ["Compilation"])
+        XCTAssertEqual(Set(try context.fetch(FetchDescriptor<Song>()).map(\.artist)), ["Alice", "Bob"])
+    }
+
+    /// Grouping an album under one name must not cost the tracks their performers.
     ///
     /// Every row used to be written with the album's name — so a compilation's songs all read
     /// "Compilation" and who actually played each one was gone from the library entirely.
@@ -489,8 +555,43 @@ final class SpotifyImportTests: XCTestCase {
                        "the list shown is the one that includes this phone")
     }
 
-    /// Something already playing is left alone.
-    func testRefreshingDevicesLeavesAnActiveDeviceAlone() async throws {
+    /// Signing in and syncing make the Spotify source active without going near the Sources
+    /// toggle, so they have to bring this phone up too — otherwise connecting Spotify left
+    /// playback pointed at whichever Connect device was last used.
+    func testConnectingSpotifyAlsoMakesThisPhoneTheTarget() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let source = try makeSource(in: context)
+        source.spotifyClientID = "abc"
+
+        let client = FakeSpotifyClient()
+        client.devices = [SpotifyDevice(id: "speaker", name: "Kitchen", isActive: true, isRestricted: false, type: "Speaker")]
+        let appRemote = FakeSpotifyAppRemote()
+        let viewModel = SourcesViewModel(
+            spotifyAuth: FakeSpotifyAuth(),
+            spotifyClient: client,
+            spotifyTokens: InMemorySpotifyTokenStore(tokens: SpotifyTokens(
+                accessToken: "t", refreshToken: "r",
+                expiresAt: Date().addingTimeInterval(3600),
+                scopes: SpotifyAuth.requiredScopes
+            )),
+            spotifyAppRemote: appRemote
+        )
+
+        viewModel.connectSpotify(
+            clientID: "abc", existingSource: source, allSources: [source], modelContext: context
+        )
+        await waitUntil { appRemote.activateCount > 0 }
+
+        XCTAssertEqual(appRemote.activateCount, 1)
+        XCTAssertTrue(source.isActive)
+    }
+
+    /// The reverse of what this once did, and deliberately so: standing aside when another
+    /// device was already active left Refresh Devices pointing playback at whichever Connect
+    /// device was last used — often a speaker in another room — and the next track started
+    /// there. Making this phone the target is the point of the button.
+    func testRefreshingDevicesBringsThisPhoneUpEvenWhenAnotherDeviceIsPlaying() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let source = try makeSource(in: context)
@@ -513,7 +614,7 @@ final class SpotifyImportTests: XCTestCase {
         viewModel.loadSpotifyDevices(source: source, activatingThisPhone: true)
         await waitUntil { !viewModel.spotifyDevices.isEmpty }
 
-        XCTAssertEqual(appRemote.activateCount, 0, "the Kitchen speaker is playing; leave it")
+        XCTAssertEqual(appRemote.activateCount, 1, "the phone is activated whatever else is playing")
     }
 
     /// The reported bug: opening the Sources screen woke Spotify and started music, in any mode.

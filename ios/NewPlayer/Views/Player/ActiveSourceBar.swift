@@ -40,17 +40,21 @@ struct ActiveSourceBar: View {
         }
     }
 
+    /// The same names the Sources tab uses for its switches. They were the app's own words
+    /// before — "Local Folder", "Music Library", "Remote" — so the bar named a source the
+    /// Sources screen did not, and the two had to be matched up by the reader.
     private var label: String {
         guard let activeSource else { return "No active source" }
         switch activeSource.kind {
         case .local:
-            return "Local Folder"
+            return "Local files"
         case .mediaLibrary:
-            return "Music Library"
+            return "Apple Music"
         case .spotify:
             return "Spotify"
         case .network:
-            return "Remote — \(activeSource.host):\(activeSource.port)"
+            // The host is kept: it is the one source where *which* one matters.
+            return "MPD — \(activeSource.host):\(activeSource.port)"
         }
     }
 }

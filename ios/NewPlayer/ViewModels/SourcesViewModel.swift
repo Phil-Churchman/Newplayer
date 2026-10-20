@@ -192,11 +192,15 @@ final class SourcesViewModel: ObservableObject {
                 )
                 var devices = try await self.spotifyClient.fetchDevices(accessToken: token)
 
-                // Bring this phone up so Spotify registers it, which is the only way it appears
-                // in this list at all — but not when something else is already playing. Taking
-                // the music off a speaker because the user pressed Refresh would be its own kind
-                // of wrong, and the list is the thing they asked to refresh.
-                if activatingThisPhone, !devices.contains(where: \.isActive) {
+                // Bring this phone up, whatever else Spotify is currently playing to.
+                //
+                // This used to stand aside when another device was already active, on the
+                // reasoning that taking music off a speaker was rude. In practice it meant the
+                // opposite of what the user wanted: Refresh Devices left playback pointed at
+                // whichever Connect device was last used — frequently one in another room — and
+                // the next track started there. Asking for this phone to be made the target is
+                // the whole purpose of the button.
+                if activatingThisPhone {
                     do {
                         try await self.spotifyAppRemote.activateLocalPlayback(
                             clientID: source.spotifyClientID,
@@ -596,6 +600,13 @@ final class SourcesViewModel: ObservableObject {
         SourceSelection.selectedKind = target.kind
         for source in allSources {
             source.isActive = (source.persistentModelID == target.persistentModelID)
+        }
+        // Becoming the active Spotify source means this phone should be the device Spotify
+        // plays to. Signing in and syncing reach here without going through the Sources
+        // toggle, so without this they left playback pointed at whichever Connect device was
+        // last used — the same complaint as Refresh Devices, by a different route.
+        if target.kind == .spotify {
+            loadSpotifyDevices(source: target, activatingThisPhone: true)
         }
     }
 

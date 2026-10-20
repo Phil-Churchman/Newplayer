@@ -78,31 +78,34 @@ extension MediaLibraryImportService {
     ///
     /// - The artist shown is the *album* artist, not the per-track artist. On a well-tagged
     ///   iTunes library that is what keeps a release together under one name.
-    /// - An album whose tracks credit several different artists is shown as "Compilation", for
-    ///   every track in it. Otherwise a Various Artists record scatters itself across the
-    ///   Artists list, one entry per guest.
+    /// - The album artist follows `AlbumArtistRule`: the tag the album's tracks agree on, or
+    ///   "Compilation" when none carries one or they disagree. Otherwise a Various Artists
+    ///   record scatters itself across the Artists list, one entry per guest.
     /// - The cover is taken from the album's first track and applied to the album, so every
     ///   track in it shows the same art from a single render.
     static func makeRawSongs(
         from tracks: [MediaLibraryTrack],
         artworkForTrack: (String) -> Data?
     ) -> [RawSong] {
-        // Grouped on the library's own album ID where there is one, so two different releases
-        // sharing a title stay apart.
-        let grouped = Dictionary(grouping: tracks) { track -> String in
-            track.albumPersistentID.isEmpty
-                ? "\(track.albumTitle ?? "")|\(track.albumArtist ?? "")"
-                : track.albumPersistentID
-        }
+        // By title first, then split into the albums those tracks actually belong to — see
+        // `AlbumArtistRule.albumComponents`. Neither the library's album ID nor the album artist
+        // works alone: the ID differs between tracks added by different routes, and the artist
+        // is the very thing a compilation disagrees about.
+        let grouped = Dictionary(grouping: tracks) { AlbumArtistRule.albumTitle($0.albumTitle) }
+            .values
+            .flatMap { AlbumArtistRule.albumComponents($0, id: \.albumPersistentID, albumArtist: \.albumArtist) }
 
         var rows: [RawSong] = []
         rows.reserveCapacity(tracks.count)
 
-        for (_, albumTracks) in grouped {
+        for albumTracks in grouped {
             // Track order decides which one is "first"; the library hands them back unordered.
             let ordered = albumTracks.sorted { $0.trackNumber < $1.trackNumber }
             let albumName = ordered.first?.albumTitle.nilIfBlank ?? "Unknown Album"
-            let artistName = artistName(for: ordered)
+            let albumArtist = AlbumArtistRule.groupingArtist(
+                albumArtists: ordered.map(\.albumArtist),
+                trackArtists: ordered.map(\.artist)
+            )
 
             // One render for the whole album, from its first track.
             let cover = ordered.first.flatMap { artworkForTrack($0.persistentID) }
@@ -110,9 +113,12 @@ extension MediaLibraryImportService {
             for (index, track) in ordered.enumerated() {
                 rows.append(RawSong(
                     title: track.title.nilIfBlank ?? "Unknown Title",
-                    artist: artistName,
+                    // The track's own performer. It used to be overwritten with the album
+                    // artist, so every track of a compilation was credited to "Compilation"
+                    // and who actually played it was gone from the library.
+                    artist: AlbumArtistRule.trackArtist(track.artist, inAlbumBy: albumArtist),
                     album: albumName,
-                    albumArtist: artistName,
+                    albumArtist: albumArtist,
                     track: track.trackNumber,
                     duration: track.duration,
                     relativePath: track.persistentID,
@@ -125,17 +131,6 @@ extension MediaLibraryImportService {
         return rows
     }
 
-    /// "Compilation" when the album credits more than one track artist, otherwise the album
-    /// artist — falling back to the track artist when the album-artist tag is missing.
-    private static func artistName(for albumTracks: [MediaLibraryTrack]) -> String {
-        let trackArtists = Set(albumTracks.compactMap { $0.artist.nilIfBlank })
-        if trackArtists.count > 1 {
-            return "Compilation"
-        }
-        return albumTracks.first?.albumArtist.nilIfBlank
-            ?? trackArtists.first
-            ?? "Unknown Artist"
-    }
 }
 
 private extension Optional where Wrapped == String {

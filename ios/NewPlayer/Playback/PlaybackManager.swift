@@ -130,7 +130,15 @@ final class PlaybackManager {
     /// reach. In offline mode both are skipped and playback goes straight to the Spotify app,
     /// which is a local connection and needs no network at all.
     @ObservationIgnored
-    private var isSpotifyOfflineMode = false
+    private(set) var isSpotifyOfflineMode = false
+
+    /// Whether the player is usable at all right now.
+    ///
+    /// Offline mode hands each track to the Spotify app with a deep link: Spotify's web service
+    /// is unreachable, so this app cannot run the queue, the transport, or even read what is
+    /// playing. A mini player and a full player whose every control is dead — and whose track
+    /// details cannot update — are worse than none, so both are hidden.
+    var isPlayerAvailable: Bool { !isSpotifyOfflineMode }
     /// The Connect device the user chose in Sources, if any. An explicit choice outranks the
     /// preference for this phone below.
     @ObservationIgnored
@@ -1828,8 +1836,13 @@ final class PlaybackManager {
         } else {
             // Claimed here rather than at launch: this is the moment the app actually makes
             // sound, and the only moment it is entitled to interrupt anything else playing.
-            AudioSessionManager.shared.activate()
-            player.play()
+            //
+            // `play()` runs once the session is claimed, off the back of the activation rather
+            // than in front of it. `isPlaying` is set now regardless, so the button answers the
+            // press immediately — the same optimistic update the remote routes use.
+            AudioSessionManager.shared.activate { [weak self] in
+                self?.player.play()
+            }
             isPlaying = true
         }
         updateNowPlayingPlaybackState()

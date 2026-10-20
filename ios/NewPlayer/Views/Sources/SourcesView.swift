@@ -29,11 +29,15 @@ struct SourcesView: View {
                 let newKind: SourceKind? = isOn ? kind : nil
                 SourceSelection.select(newKind, among: sources, modelContext: modelContext)
                 selectedSourceKindRaw = newKind?.rawValue ?? -1
-                // Switching *into* Spotify mode is one of the two moments this phone should be
-                // brought into Spotify's device list — the other is Refresh Devices. Done here
-                // rather than when the screen appears, because appearing says nothing about
-                // which mode the user is in: this screen shows a Spotify source whenever one
-                // exists, so activating on appearance woke Spotify in MPD mode too.
+                // Switching *into* Spotify mode — from another source or from none — makes
+                // this phone the device Spotify plays to, exactly as Refresh Devices does.
+                // Done here rather than when the screen appears, because appearing says nothing
+                // about which mode the user is in: this screen shows a Spotify source whenever
+                // one exists, so activating on appearance woke Spotify in MPD mode too.
+                //
+                // The other route in is `activate(_:among:)`, which sign-in and sync use.
+                // Deliberately not done on app launch: the source is already active then, and
+                // bouncing out to Spotify and back on every cold start would be its own bug.
                 if newKind == .spotify, let spotifySource {
                     viewModel.loadSpotifyDevices(source: spotifySource, activatingThisPhone: true)
                 }

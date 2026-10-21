@@ -15,13 +15,23 @@ struct SongListView: View {
         )
     }
     @Environment(PlaybackManager.self) private var playback
+    @State private var searchText = ""
+    @State private var isSearching = false
+
+    /// Matched on what the row shows: the title and the artist.
+    private var visibleSongs: [Song] {
+        guard LibrarySearch.isActive(searchText) else { return songs }
+        return songs.filter { LibrarySearch.matches(searchText, in: [$0.title, $0.artist]) }
+    }
 
     var body: some View {
         Group {
             if songs.isEmpty {
                 EmptyLibraryView()
+            } else if visibleSongs.isEmpty {
+                NoSearchResultsView(query: searchText)
             } else {
-                AlphabetIndexList(items: songs, sectionKey: { $0.title }) { song in
+                AlphabetIndexList(items: visibleSongs, sectionKey: { $0.title }) { song in
                     SongRowView(song: song, isCurrent: playback.isCurrent(song))
                         .onTapGesture {
                             playback.playNow(song)
@@ -30,7 +40,18 @@ struct SongListView: View {
             }
         }
         .navigationTitle("Songs")
+        .librarySearchable(text: $searchText, isPresented: $isSearching, prompt: "Songs and artists")
         .artworkScope(artworkScope)
+    }
+}
+
+/// Shown when a search matches nothing, so an empty list is explained rather than looking like
+/// a library that has gone missing.
+struct NoSearchResultsView: View {
+    let query: String
+
+    var body: some View {
+        ContentUnavailableView.search(text: query)
     }
 }
 

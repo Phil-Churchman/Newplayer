@@ -17,12 +17,22 @@ struct ArtistListView: View {
         )
     }
 
+    @State private var searchText = ""
+    @State private var isSearching = false
+
+    private var visibleArtists: [Artist] {
+        guard LibrarySearch.isActive(searchText) else { return artists }
+        return artists.filter { LibrarySearch.matches(searchText, in: [$0.name]) }
+    }
+
     var body: some View {
         Group {
             if artists.isEmpty {
                 EmptyLibraryView()
+            } else if visibleArtists.isEmpty {
+                NoSearchResultsView(query: searchText)
             } else {
-                AlphabetIndexList(items: artists, sectionKey: { $0.name }) { artist in
+                AlphabetIndexList(items: visibleArtists, sectionKey: { $0.name }) { artist in
                     // A Button pushing onto the bound path rather than a NavigationLink:
                     // inside a List, NavigationLink draws a disclosure chevron, which sits
                     // right under the alphabet rail and crowds it.
@@ -36,6 +46,7 @@ struct ArtistListView: View {
             }
         }
         .navigationTitle("Artists")
+        .librarySearchable(text: $searchText, isPresented: $isSearching, prompt: "Artists")
         .artworkScope(artworkScope)
         .navigationDestination(for: Artist.self) { artist in
             ArtistAlbumListView(artist: artist)

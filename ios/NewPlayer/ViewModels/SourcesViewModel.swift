@@ -348,11 +348,16 @@ final class SourcesViewModel: ObservableObject {
         try? modelContext.save()
     }
 
-    private static func summary(for result: MediaLibraryImportService.Result) -> String {
-        let tracks = "\(result.imported) track\(result.imported == 1 ? "" : "s")"
-        guard result.skippedProtected > 0 else { return "Imported \(tracks)." }
+    /// Only what the row above cannot already say.
+    ///
+    /// That row reports the count and the time — "1,234 songs — synced 21 Oct at 18:42" — so
+    /// leading with "Imported 1,234 tracks" said the same thing twice, one line apart. What it
+    /// does not cover is the tracks that were left out and why, so that is all that remains,
+    /// and the line appears only when there were any.
+    private static func summary(for result: MediaLibraryImportService.Result) -> String? {
+        guard result.skippedProtected > 0 else { return nil }
         let skipped = "\(result.skippedProtected) track\(result.skippedProtected == 1 ? " was" : "s were")"
-        return "Imported \(tracks). \(skipped) skipped — either not downloaded to this device, or Apple Music tracks that can only be played in the Music app."
+        return "\(skipped) skipped — either not downloaded to this device, or Apple Music tracks that can only be played in the Music app."
     }
 
     func setSourcesScreenVisible(_ visible: Bool) {

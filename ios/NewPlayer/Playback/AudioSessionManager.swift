@@ -56,6 +56,42 @@ final class AudioSessionManager {
     /// Hands the session back, so an app that was interrupted by us — Spotify on this phone,
     /// typically — is told it may resume. Without `notifyOthersOnDeactivation` it is never
     /// prompted to, and stays silent until the user restarts it by hand.
+    /// Claims the session unless another app is already playing, and says which happened.
+    ///
+    /// The `isOtherAudioPlaying` check belongs on this queue with everything else that touches
+    /// AVAudioSession. Read from the main thread it contends with an activation already in
+    /// flight here, and the main thread then blocks inside AVAudioSession until that finishes —
+    /// stalling every other main-actor task, the MPD status poll among them.
+    func activateIfNothingElseIsPlaying(then body: @escaping @MainActor @Sendable (Bool) -> Void) {
+        sessionQueue.async {
+            let session = AVAudioSession.sharedInstance()
+            guard !session.isOtherAudioPlaying else {
+                Task { @MainActor in body(false) }
+                return
+            }
+            do {
+                try session.setCategory(.playback, mode: .default)
+                try session.setActive(true)
+            } catch {
+                // Non-fatal: playback will still attempt to proceed.
+            }
+            Task { @MainActor in body(true) }
+        }
+    }
+
+    /// Describes the session, for working out who holds it. On the session queue for the same
+    /// reason as everything else here — reading these properties can block.
+    func describe(_ moment: String, extra: String = "") {
+        sessionQueue.async {
+            let session = AVAudioSession.sharedInstance()
+            print("""
+            AudioSession[\(moment)]: category=\(session.category.rawValue) \
+            options=\(session.categoryOptions.rawValue) \
+            otherAudioPlaying=\(session.isOtherAudioPlaying)\(extra)
+            """)
+        }
+    }
+
     func deactivate() {
         // Nothing waits on this, and it is the expensive one: `notifyOthersOnDeactivation` has
         // to reach every other app that wants the session back.

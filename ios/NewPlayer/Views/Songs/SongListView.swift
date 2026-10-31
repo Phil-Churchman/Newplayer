@@ -16,7 +16,6 @@ struct SongListView: View {
     }
     @Environment(PlaybackManager.self) private var playback
     @State private var searchText = ""
-    @State private var isSearching = false
 
     /// Matched on what the row shows: the title and the artist.
     private var visibleSongs: [Song] {
@@ -40,7 +39,7 @@ struct SongListView: View {
             }
         }
         .navigationTitle("Songs")
-        .librarySearchable(text: $searchText, isPresented: $isSearching, prompt: "Songs and artists")
+        .librarySearchable(text: $searchText, prompt: "Songs and artists")
         .artworkScope(artworkScope)
     }
 }

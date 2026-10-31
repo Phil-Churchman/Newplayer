@@ -112,6 +112,9 @@ struct SourcesView: View {
                     Toggle("Local files", isOn: selectionBinding(for: .local))
                     InfoButton { infoTopic = .local }
                 }
+                // The one line kept in each section: it separates the switch from the detail
+                // it controls.
+                .listRowSeparator(.visible)
                 if showLocal, let localSource {
                     SourceRowView(
                         source: localSource,
@@ -139,12 +142,19 @@ struct SourcesView: View {
                     .listRowSeparator(.hidden)
                 }
             }
+            // Hidden for the whole section, then restored on the switch itself below. A
+            // selected source's details read as one block, instead of a ladder of hairlines
+            // between a sync status, a picker, a button and a note.
+            .listRowSeparator(.hidden)
 
             Section {
                 HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                     Toggle("Apple Music", isOn: selectionBinding(for: .mediaLibrary))
                     InfoButton { infoTopic = .mediaLibrary }
                 }
+                // The one line kept in each section: it separates the switch from the detail
+                // it controls.
+                .listRowSeparator(.visible)
                 if showMediaLibrary, let mediaLibrarySource {
                     SourceRowView(
                         source: mediaLibrarySource,
@@ -175,12 +185,19 @@ struct SourcesView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // Hidden for the whole section, then restored on the switch itself below. A
+            // selected source's details read as one block, instead of a ladder of hairlines
+            // between a sync status, a picker, a button and a note.
+            .listRowSeparator(.hidden)
 
             Section {
                 HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                     Toggle("MPD", isOn: selectionBinding(for: .network))
                     InfoButton { infoTopic = .network }
                 }
+                // The one line kept in each section: it separates the switch from the detail
+                // it controls.
+                .listRowSeparator(.visible)
                 if showNetwork, let networkSource {
                     SourceRowView(
                         source: networkSource,
@@ -239,12 +256,19 @@ struct SourcesView: View {
                     .disabled(hostInput.isEmpty || Int(portInput) == nil || viewModel.isConnecting)
                 }
             }
+            // Hidden for the whole section, then restored on the switch itself below. A
+            // selected source's details read as one block, instead of a ladder of hairlines
+            // between a sync status, a picker, a button and a note.
+            .listRowSeparator(.hidden)
 
             Section {
                 HStack(spacing: LayoutMetrics.infoButtonSpacing) {
                     Toggle("Spotify", isOn: selectionBinding(for: .spotify))
                     InfoButton { infoTopic = .spotify }
                 }
+                // The one line kept in each section: it separates the switch from the detail
+                // it controls.
+                .listRowSeparator(.visible)
                 if showSpotify, let spotifySource {
                     SourceRowView(
                         source: spotifySource,
@@ -374,6 +398,10 @@ struct SourcesView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // Hidden for the whole section, then restored on the switch itself below. A
+            // selected source's details read as one block, instead of a ladder of hairlines
+            // between a sync status, a picker, a button and a note.
+            .listRowSeparator(.hidden)
 
             if let errorMessage = viewModel.errorMessage {
                 Section {

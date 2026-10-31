@@ -18,7 +18,6 @@ struct AlbumListView: View {
     }
 
     @State private var searchText = ""
-    @State private var isSearching = false
 
     /// Matched on what the row shows: the album's name and its artist.
     private var visibleAlbums: [Album] {
@@ -49,7 +48,7 @@ struct AlbumListView: View {
             }
         }
         .navigationTitle("Albums")
-        .librarySearchable(text: $searchText, isPresented: $isSearching, prompt: "Albums and artists")
+        .librarySearchable(text: $searchText, prompt: "Albums and artists")
         .artworkScope(artworkScope)
         .navigationDestination(for: Album.self) { album in
             AlbumSongListView(album: album)

@@ -18,7 +18,6 @@ struct ArtistListView: View {
     }
 
     @State private var searchText = ""
-    @State private var isSearching = false
 
     private var visibleArtists: [Artist] {
         guard LibrarySearch.isActive(searchText) else { return artists }
@@ -46,7 +45,7 @@ struct ArtistListView: View {
             }
         }
         .navigationTitle("Artists")
-        .librarySearchable(text: $searchText, isPresented: $isSearching, prompt: "Artists")
+        .librarySearchable(text: $searchText, prompt: "Artists")
         .artworkScope(artworkScope)
         .navigationDestination(for: Artist.self) { artist in
             ArtistAlbumListView(artist: artist)

@@ -300,8 +300,9 @@ final class SpotifyPlaybackTests: XCTestCase {
         XCTAssertFalse(remote.commands.contains { $0.hasPrefix("takeOver") })
     }
 
-    /// A device that refuses to be claimed should say so rather than silently doing nothing.
-    func testAFailedTakeOverIsReported() async {
+    /// A device that refuses to be claimed should say so rather than silently doing nothing —
+    /// and what it says is the offer to forget it and start again.
+    func testAFailedTakeOverOffersToRefreshDevices() async {
         let remote = FakeSpotifyPlayback()
         let manager = PlaybackManager(spotify: remote)
         manager.setActiveSource(spotifySource())
@@ -311,7 +312,7 @@ final class SpotifyPlaybackTests: XCTestCase {
         manager.selectSpotifyDevice(id: "locked")
         await settle()
 
-        XCTAssertNotNil(manager.playbackErrorMessage)
+        XCTAssertEqual(manager.spotifyPrompt, .staleConnection)
     }
 
     /// Leaving the source stops the device even when this app doesn't think it is playing —
@@ -537,7 +538,7 @@ final class SpotifyPlaybackTests: XCTestCase {
 
     /// Spotify answers a transfer before the device has picked it up, and a device can decline
     /// quietly — so the switch is verified rather than assumed.
-    func testATransferThatDoesNotTakeIsReported() async {
+    func testATransferThatDoesNotTakeOffersToRefreshDevices() async {
         let remote = FakeSpotifyPlayback()
         remote.state = SpotifyPlayerState(
             isPlaying: false, progressSeconds: 0, durationSeconds: 0,
@@ -550,10 +551,10 @@ final class SpotifyPlaybackTests: XCTestCase {
         await settle()
 
         manager.selectSpotifyDevice(id: "speaker")
-        await waitUntil(timeout: 10) { manager.playbackErrorMessage != nil }
+        await waitUntil(timeout: 10) { manager.spotifyPrompt != nil }
 
-        XCTAssertTrue(manager.playbackErrorMessage?.contains("didn't move") == true,
-                      "got: \(manager.playbackErrorMessage ?? "nil")")
+        // Accepted and then never carried out is a device that has gone: the same offer.
+        XCTAssertEqual(manager.spotifyPrompt, .staleConnection)
     }
 
     /// A transfer that does take leaves no error behind.

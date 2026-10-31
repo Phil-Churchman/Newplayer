@@ -24,53 +24,21 @@ enum LibrarySearch {
     }
 }
 
-/// The magnifying glass that reveals the search field, and the field itself.
+/// Always-on search for a library list.
 ///
-/// The `searchable` modifier is attached only while searching, rather than always with an
-/// `isPresented` binding to hide it. Dismissed, it does not go away: it collapses into the
-/// navigation bar's search drawer and sits there under the title as an empty bar. Removing the
-/// modifier outright is the only way to get the space back.
+/// Attached permanently rather than revealed by a toolbar icon. An icon meant the modifier had
+/// to come and go, and removing it mid-dismissal tore the navigation bar's search drawer down
+/// while the keyboard was still animating in its own window — which is what CoreAnimation was
+/// complaining about. A field that is simply always there has nothing to tear down.
 ///
-/// The text is cleared on the way out, because a hidden field holding a query would leave the
-/// list filtered with nothing on screen to explain why.
-struct LibrarySearchable: ViewModifier {
-    @Binding var text: String
-    @Binding var isPresented: Bool
-    let prompt: String
-
-    func body(content: Content) -> some View {
-        searchField(content)
-            .onChange(of: isPresented) { _, nowPresented in
-                if !nowPresented { text = "" }
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    // Hidden while searching: the field has its own Cancel, and two ways out
-                    // sitting side by side is one too many.
-                    if !isPresented {
-                        Button {
-                            isPresented = true
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        .accessibilityLabel("Search")
-                    }
-                }
-            }
-    }
-
-    @ViewBuilder
-    private func searchField(_ content: Content) -> some View {
-        if isPresented {
-            content.searchable(text: $text, isPresented: $isPresented, prompt: prompt)
-        } else {
-            content
-        }
-    }
-}
-
+/// `displayMode: .always` so it stays put instead of hiding above the first row, where it is
+/// only found by pulling the list down.
 extension View {
-    func librarySearchable(text: Binding<String>, isPresented: Binding<Bool>, prompt: String) -> some View {
-        modifier(LibrarySearchable(text: text, isPresented: isPresented, prompt: prompt))
+    func librarySearchable(text: Binding<String>, prompt: String) -> some View {
+        searchable(
+            text: text,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: prompt
+        )
     }
 }

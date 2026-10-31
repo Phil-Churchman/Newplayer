@@ -34,29 +34,21 @@ struct RootView: View {
             .task {
                 await autoScanIfNeeded()
             }
-            // Offered here rather than reported as an error, because authorizing goes over the
-            // network: "Spotify needs authorizing again" is what losing the connection looks
-            // like from the player's side, and the remedy it names is one the user can't reach
-            // without a connection. Offline mode is what would work.
+            // Offered as a choice rather than reported as text. Spotify's own words describe
+            // its world — "Restriction violated", "The Internet connection appears to be
+            // offline" — and name nothing the user can do from here. Each of these two does.
             .alert(
-                "Spotify can't be authorized",
+                playback.spotifyPrompt?.title ?? "",
                 isPresented: Binding(
-                    get: { playback.isSuggestingSpotifyOfflineMode },
-                    set: { if !$0 { playback.dismissSpotifyOfflineModeSuggestion() } }
-                )
-            ) {
-                Button("Use offline mode") {
-                    playback.dismissSpotifyOfflineModeSuggestion()
-                    guard let source = activeSource else { return }
-                    source.isOfflineMode = true
-                    try? modelContext.save()
-                    playback.setSpotifyOfflineMode(true)
-                }
-                Button("Not now", role: .cancel) {
-                    playback.dismissSpotifyOfflineModeSuggestion()
-                }
-            } message: {
-                Text("That usually means there's no connection. Offline mode hands tracks to the Spotify app instead, which plays whatever it has downloaded — no authorization needed.")
+                    get: { playback.spotifyPrompt != nil },
+                    set: { if !$0 { playback.dismissSpotifyPrompt() } }
+                ),
+                presenting: playback.spotifyPrompt
+            ) { prompt in
+                Button(prompt.confirmTitle) { apply(prompt) }
+                Button("Not now", role: .cancel) { playback.dismissSpotifyPrompt() }
+            } message: { prompt in
+                Text(prompt.detail)
             }
             .onAppear {
                 playback.setActiveSource(activeSource, resolveSong: makeSongResolver(for: activeSource))
@@ -80,6 +72,26 @@ struct RootView: View {
                 availability: availability,
                 onShowNowPlaying: { showNowPlaying = true }
             )
+        }
+    }
+
+    /// Carries out what the prompt offered.
+    ///
+    /// Both halves have to be written through to the Source as well as to the player: the
+    /// pinned device and the offline switch are stored there, and a change only the player knew
+    /// about would be undone by the next launch.
+    private func apply(_ prompt: PlaybackManager.SpotifyPrompt) {
+        playback.dismissSpotifyPrompt()
+        guard let source = activeSource else { return }
+        switch prompt {
+        case .staleConnection:
+            source.spotifyDeviceID = nil
+            try? modelContext.save()
+            playback.resetSpotifyDevices()
+        case .offline:
+            source.isOfflineMode = true
+            try? modelContext.save()
+            playback.setSpotifyOfflineMode(true)
         }
     }
 

@@ -36,17 +36,19 @@ final class SilentAudioKeepAlive: NowPlayingSessionHolding {
         // check and the second would orphan the first, leaving it playing silence forever.
         guard player == nil, !isStarting else { return }
         isStarting = true
-        guard !AVAudioSession.sharedInstance().isOtherAudioPlaying else {
-            print("SilentAudioKeepAlive: another app is playing audio — not claiming the session")
-            isStarting = false
-            return
-        }
-
         // The session is no longer claimed at launch, so the silence that holds the widget has
-        // to claim it here. Guarded by the `isOtherAudioPlaying` check above, which is what
-        // keeps this from interrupting anything — including Spotify on this same phone.
-        AudioSessionManager.shared.activate { [weak self] in
-            self?.startSilence()
+        // to claim it here — but never over another app, including Spotify on this same phone.
+        // The check and the claim happen together on the audio session's own queue: asking
+        // `isOtherAudioPlaying` from here blocked the main thread behind any activation already
+        // in flight, which stalled unrelated work such as the MPD status poll.
+        AudioSessionManager.shared.activateIfNothingElseIsPlaying { [weak self] claimed in
+            guard let self else { return }
+            guard claimed else {
+                print("SilentAudioKeepAlive: another app is playing audio — not claiming the session")
+                self.isStarting = false
+                return
+            }
+            self.startSilence()
         }
     }
 

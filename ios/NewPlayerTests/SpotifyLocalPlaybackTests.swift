@@ -648,11 +648,10 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         XCTAssertFalse(remote.localPlayRequests.isEmpty)
     }
 
-    // MARK: - Offering offline mode when authorization fails
+    // MARK: - Offering a remedy instead of Spotify's words
 
-    /// "Spotify needs authorizing again" is what losing the connection looks like from the
-    /// player's side — authorizing goes over the network — so the remedy it names is one the
-    /// user cannot reach. Offline mode is what would work, so it is offered.
+    /// Authorizing goes over the network, so a token that cannot be had is what losing the
+    /// connection looks like from the player's side — and offline mode is what would work.
     func testAnAuthorizationFailureOffersOfflineMode() async {
         let remote = FakeSpotifyPlayback()
         remote.errorToThrow = SpotifyError.notSignedIn
@@ -663,26 +662,59 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         manager.play(songs: [song("t1", source: source)], startAt: 0)
         await settle()
 
-        XCTAssertTrue(manager.isSuggestingSpotifyOfflineMode)
+        XCTAssertEqual(manager.spotifyPrompt, .offline)
+        XCTAssertNil(manager.playbackErrorMessage, "the prompt replaces the text, it does not join it")
     }
 
-    /// Not for failures offline mode doesn't answer. A refused command is a different problem,
-    /// and offering offline mode for it would be noise.
-    func testOtherFailuresDoNotOfferOfflineMode() async {
+    /// No connection at all: the same offer, reached from a transport failure.
+    func testAnUnreachableNetworkOffersOfflineMode() async {
         let remote = FakeSpotifyPlayback()
-        remote.errorToThrow = SpotifyError.actionNotAllowed("Restriction violated")
+        remote.errorToThrow = URLError(.notConnectedToInternet)
         let manager = makeManager(remote)
-        let source = spotifySource()
+        let source = connectSpotifySource()
         manager.setActiveSource(source)
 
         manager.play(songs: [song("t1", source: source)], startAt: 0)
         await settle()
 
-        XCTAssertFalse(manager.isSuggestingSpotifyOfflineMode)
+        XCTAssertEqual(manager.spotifyPrompt, .offline)
     }
 
-    /// And never when it is already on — there would be nothing to offer.
-    func testNoOfferWhenOfflineModeIsAlreadyOn() async {
+    /// Spotify answered and refused: the device it was aiming at is the likely cause, so the
+    /// offer is to refresh devices rather than to go offline.
+    func testARefusedCommandOffersToRefreshDevices() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.actionNotAllowed("Restriction violated")
+        let manager = makeManager(remote)
+        let source = connectSpotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertEqual(manager.spotifyPrompt, .staleConnection)
+        XCTAssertNil(manager.playbackErrorMessage)
+    }
+
+    /// Rate limiting keeps its own words: they say how long to wait, which is actionable, and
+    /// refreshing devices would do nothing for it.
+    func testRateLimitingIsStillReportedInWords() async {
+        let remote = FakeSpotifyPlayback()
+        remote.errorToThrow = SpotifyError.rateLimited(retryAfterSeconds: 30)
+        let manager = makeManager(remote)
+        let source = connectSpotifySource()
+        manager.setActiveSource(source)
+
+        manager.play(songs: [song("t1", source: source)], startAt: 0)
+        await settle()
+
+        XCTAssertNil(manager.spotifyPrompt)
+        XCTAssertNotNil(manager.playbackErrorMessage)
+    }
+
+    /// Never when offline mode is already on: the Web API is not what is being used, and there
+    /// would be nothing to offer.
+    func testNoPromptWhenOfflineModeIsAlreadyOn() async {
         let remote = FakeSpotifyPlayback()
         remote.localPlayError = SpotifyError.notSignedIn
         let manager = makeManager(remote)
@@ -692,11 +724,11 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         manager.play(songs: [song("t1", source: source)], startAt: 0)
         await settle()
 
-        XCTAssertFalse(manager.isSuggestingSpotifyOfflineMode)
+        XCTAssertNil(manager.spotifyPrompt)
     }
 
     /// Dismissing clears it, so the alert doesn't come back on the next redraw.
-    func testDismissingTheOfferClearsIt() async {
+    func testDismissingThePromptClearsIt() async {
         let remote = FakeSpotifyPlayback()
         remote.errorToThrow = SpotifyError.permissionsMissing
         let manager = makeManager(remote)
@@ -705,10 +737,25 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
 
         manager.play(songs: [song("t1", source: source)], startAt: 0)
         await settle()
-        XCTAssertTrue(manager.isSuggestingSpotifyOfflineMode)
+        XCTAssertNotNil(manager.spotifyPrompt)
 
-        manager.dismissSpotifyOfflineModeSuggestion()
-        XCTAssertFalse(manager.isSuggestingSpotifyOfflineMode)
+        manager.dismissSpotifyPrompt()
+        XCTAssertNil(manager.spotifyPrompt)
+    }
+
+    /// Agreeing forgets the device Spotify was aiming at and brings this phone up again.
+    func testRefreshingDevicesForgetsThePinAndActivatesThisPhone() async {
+        let remote = FakeSpotifyPlayback()
+        let manager = makeManager(remote)
+        manager.setActiveSource(connectSpotifySource())
+        await settle()
+
+        manager.resetSpotifyDevices()
+        await settle()
+
+        XCTAssertNil(manager.spotifyPrompt)
+        XCTAssertNil(remote.selectedDeviceID, "the pin is what kept commands going to a dead device")
+        XCTAssertEqual(remote.activateLocalAppCount, 1)
     }
 
     // MARK: - When Connect has nowhere to play at all
@@ -777,7 +824,8 @@ final class SpotifyLocalPlaybackTests: XCTestCase {
         await settle()
 
         XCTAssertTrue(remote.localPlayRequests.isEmpty, "not every refusal means launching Spotify")
-        XCTAssertNotNil(manager.playbackErrorMessage)
+        // Reported as the offer to clear the stale device, rather than as Spotify's own words.
+        XCTAssertEqual(manager.spotifyPrompt, .staleConnection)
     }
 
     // MARK: - Switching back to this phone

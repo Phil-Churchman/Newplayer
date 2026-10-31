@@ -81,7 +81,88 @@ final class PlaybackManager {
     /// to the Spotify app with a deep link, which needs no permission — so the error names a
     /// remedy the user cannot reach, while the thing that would work sits behind a switch they
     /// have no reason to connect with it.
-    private(set) var isSuggestingSpotifyOfflineMode = false
+    /// What to put in front of the user when Spotify fails, in place of Spotify's own words.
+    ///
+    /// Spotify's errors describe Spotify's world — "Restriction violated", "Player command
+    /// failed", "The Internet connection appears to be offline" — and name no remedy the user
+    /// can apply from here. Each of these two does: one is a device that has gone away, the
+    /// other is a service that cannot be reached, and both have a single obvious next step.
+    enum SpotifyPrompt: String, Identifiable, CaseIterable {
+        /// Spotify answered, and refused. Usually the device it was aiming at is no longer there.
+        case staleConnection
+        /// Spotify was never reached at all.
+        case offline
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .staleConnection: "Stale connection: Refresh devices?"
+            case .offline: "Spotify offline: Switch to offline mode?"
+            }
+        }
+
+        var confirmTitle: String {
+            switch self {
+            case .staleConnection: "Refresh Devices"
+            case .offline: "Switch to Offline Mode"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .staleConnection:
+                "Spotify refused the command. Refreshing forgets the device it was playing to and brings this phone up again."
+            case .offline:
+                "Offline mode hands tracks to the Spotify app, which plays whatever it has downloaded."
+            }
+        }
+    }
+
+    private(set) var spotifyPrompt: SpotifyPrompt?
+
+    /// What Spotify last reported, as a value that changes whenever anything about playback
+    /// does.
+    ///
+    /// Recorded on every state read, so a transport command can be checked against it without a
+    /// round trip of its own. Spotify accepts commands aimed at a device that has gone and
+    /// answers 200 — a dead device looks exactly like a working one until nothing moves, which
+    /// is what "the controls don't do anything" is.
+    private var lastSpotifyStateFingerprint = ""
+
+    /// Whether the failure means Spotify was never reached, as opposed to having answered.
+    ///
+    /// Authorizing goes over the network too, so a token that cannot be obtained is what losing
+    /// the connection looks like from the player's side.
+    static func isSpotifyUnreachable(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost,
+                 .cannotFindHost, .dnsLookupFailed, .timedOut, .dataNotAllowed,
+                 .internationalRoamingOff, .secureConnectionFailed:
+                return true
+            default:
+                return false
+            }
+        }
+        switch error as? SpotifyError {
+        case .notSignedIn, .permissionsMissing: return true
+        case .requestFailed(let detail): return detail == "no response"
+        default: return false
+        }
+    }
+
+    /// Which prompt a failure deserves, or nil to report it in words after all.
+    ///
+    /// Rate limiting is the one Spotify error left to speak for itself: its message says how
+    /// long to wait, which is actionable, and refreshing devices would do nothing for it.
+    static func spotifyPrompt(for error: Error) -> SpotifyPrompt? {
+        if isSpotifyUnreachable(error) { return .offline }
+        switch error as? SpotifyError {
+        case .none, .rateLimited: return nil
+        default: return .staleConnection
+        }
+    }
 
     /// Bumped each time this phone has just been made Spotify's active device.
     ///
@@ -90,8 +171,34 @@ final class PlaybackManager {
     /// up instead of waiting to be opened again.
     private(set) var localSpotifyActivations = 0
 
-    func dismissSpotifyOfflineModeSuggestion() {
-        isSuggestingSpotifyOfflineMode = false
+    func dismissSpotifyPrompt() {
+        spotifyPrompt = nil
+    }
+
+    /// Forgets the device Spotify was aiming at and brings this phone up again.
+    ///
+    /// The answer to a stale connection: the pin is what keeps sending commands to something
+    /// that has gone away, so it goes, and the phone is made active so there is somewhere to
+    /// play. Clearing the *stored* pin is the caller's to do — it lives on the Source.
+    func resetSpotifyDevices() {
+        spotifyPrompt = nil
+        guard isSpotifyMode, !isSpotifyOfflineMode else { return }
+
+        spotifyPinnedDeviceID = nil
+        lastKnownActiveSpotifyDeviceID = nil
+        spotify.selectDevice(id: nil)
+        showSpotifyError(nil)
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.spotify.activateLocalApp()
+                // Anything showing the device list is now out of date.
+                self.localSpotifyActivations += 1
+            } catch {
+                print("PlaybackManager: couldn't bring this phone up after a stale connection — \(error)")
+            }
+        }
     }
 
     @ObservationIgnored
@@ -651,8 +758,12 @@ final class PlaybackManager {
             do {
                 try await self.spotify.takeOverDevice(id: id, play: shouldKeepPlaying)
             } catch {
-                self.showSpotifyError((error as? SpotifyError)?.errorDescription
-                    ?? error.localizedDescription)
+                if !self.isSpotifyOfflineMode, let prompt = Self.spotifyPrompt(for: error) {
+                    self.raiseSpotifyPrompt(prompt)
+                } else {
+                    self.showSpotifyError((error as? SpotifyError)?.errorDescription
+                        ?? error.localizedDescription)
+                }
                 return
             }
             await self.confirmTransfer(toDeviceID: id)
@@ -702,7 +813,9 @@ final class PlaybackManager {
             }
         }
 
-        showSpotifyError("Spotify didn't move playback to that device. It may have gone offline — try Refresh Devices.")
+        // Accepted and then not carried out, which is what a device that has gone away looks
+        // like from here — exactly the prompt's case.
+        raiseSpotifyPrompt(.staleConnection)
     }
 
     @ObservationIgnored
@@ -731,13 +844,23 @@ final class PlaybackManager {
     }
 
     private func reportSpotifyFailure(_ error: Error) {
-        reportSpotifyFailure(message: (error as? SpotifyError)?.errorDescription ?? error.localizedDescription)
-        // Only worth offering when it isn't already on, and only for the failures offline mode
-        // actually answers. A refused command or an unreachable device is a different problem,
-        // and offering offline mode for those would be noise.
-        if !isSpotifyOfflineMode, Self.isSpotifyAuthorizationFailure(error) {
-            isSuggestingSpotifyOfflineMode = true
+        // A prompt replaces the text rather than accompanying it: the whole point is that the
+        // user is offered the remedy instead of being shown Spotify's description of the fault.
+        if !isSpotifyOfflineMode, let prompt = Self.spotifyPrompt(for: error) {
+            raiseSpotifyPrompt(prompt)
+            return
         }
+        reportSpotifyFailure(message: (error as? SpotifyError)?.errorDescription ?? error.localizedDescription)
+    }
+
+    /// Raises a prompt, and undoes the optimistic playing state the failed attempt went with.
+    private func raiseSpotifyPrompt(_ prompt: SpotifyPrompt) {
+        guard isSpotifyMode else { return }
+        showSpotifyError(nil)
+        spotifyPrompt = prompt
+        isPlaying = false
+        syncRemoteClock()
+        updateNowPlayingPlaybackState()
     }
 
     /// Reports a failure in this app's own words, and undoes the optimistic playing state that
@@ -877,13 +1000,7 @@ final class PlaybackManager {
     /// — and a backgrounded app that is refused it cannot get it back. It stops, and clears what
     /// it was playing. A Mac is untouched by any of this, which is the asymmetry being chased.
     private func logAudioSessionState(_ moment: String) {
-        let session = AVAudioSession.sharedInstance()
-        print("""
-        PlaybackManager[session/\(moment)]: category=\(session.category.rawValue) \
-        options=\(session.categoryOptions.rawValue) \
-        otherAudioPlaying=\(session.isOtherAudioPlaying) \
-        keepAliveRunning=\(remoteKeepAlive.isRunning)
-        """)
+        AudioSessionManager.shared.describe(moment, extra: " keepAliveRunning=\(remoteKeepAlive.isRunning)")
     }
 
     /// Falls back to driving the Spotify app on this phone directly when Connect would not.
@@ -1113,6 +1230,7 @@ final class PlaybackManager {
         }
         currentTime = 0
         remoteTimeAnchor = (elapsed: 0, at: Date())
+        let stateBefore = lastSpotifyStateFingerprint
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -1122,7 +1240,7 @@ final class PlaybackManager {
                 self.reportSpotifyFailure(error)
                 return
             }
-            await self.confirmSpotifyState()
+            await self.confirmSpotifyRespondedToCommand(changingFrom: stateBefore)
         }
     }
 
@@ -1137,6 +1255,7 @@ final class PlaybackManager {
         }
         currentTime = 0
         remoteTimeAnchor = (elapsed: 0, at: Date())
+        let stateBefore = lastSpotifyStateFingerprint
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -1150,12 +1269,26 @@ final class PlaybackManager {
                 self.reportSpotifyFailure(error)
                 return
             }
-            await self.confirmSpotifyState()
+            await self.confirmSpotifyRespondedToCommand(changingFrom: stateBefore)
         }
     }
 
     /// Re-reads Spotify a few times in quick succession after a command it should have changed.
     /// A skip takes a moment to land, and the ordinary poll runs seconds apart.
+    /// Whether a command Spotify accepted actually did anything.
+    ///
+    /// Spotify answers 200 for a device that has left Connect, so a refusal is not the only way
+    /// for the controls to stop working — the commonest way is no error at all and nothing
+    /// happening. Waiting for the state to settle and finding it identical is how that looks
+    /// from here, and it is the same stale device the prompt offers to clear.
+    private func confirmSpotifyRespondedToCommand(changingFrom stateBefore: String) async {
+        await confirmSpotifyState()
+        guard isSpotifyMode, !isSpotifyOfflineMode, spotifyPrompt == nil else { return }
+        guard lastSpotifyStateFingerprint == stateBefore else { return }
+        print("PlaybackManager: Spotify took the command and nothing moved — offering a device refresh")
+        raiseSpotifyPrompt(.staleConnection)
+    }
+
     private func confirmSpotifyState(attempts: Int = 3) async {
         spotifyConfirmGeneration &+= 1
         let generation = spotifyConfirmGeneration
@@ -1204,28 +1337,41 @@ final class PlaybackManager {
     /// Runs a Spotify Connect command, reporting a refusal rather than leaving a button that
     /// silently does nothing. "No active device" is the common one and is not a fault: Spotify
     /// only accepts commands when one of its clients is running.
-    private func performSpotifyCommand(_ body: @escaping (SpotifyPlaybackControlling) async throws -> Void) {
+    /// - Parameter expectingChange: for the transport controls, where Spotify reporting exactly
+    ///   what it reported before means the command went nowhere.
+    private func performSpotifyCommand(
+        expectingChange: Bool = false,
+        _ body: @escaping (SpotifyPlaybackControlling) async throws -> Void
+    ) {
         // Same reasoning as the skips: offline these reach a service that cannot be reached.
         guard !isSpotifyOfflineMode else { return }
         // Which source this command belongs to. Checked again on the way out, because the await
         // below can span a source change and none of this state belongs to the new one.
         let sourceAtLaunch = activeSourceID
+        let stateBefore = lastSpotifyStateFingerprint
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await body(self.spotify)
                 guard self.activeSourceID == sourceAtLaunch else { return }
                 self.showSpotifyError(nil)
+                if expectingChange {
+                    await self.confirmSpotifyRespondedToCommand(changingFrom: stateBefore)
+                }
             } catch {
                 guard self.activeSourceID == sourceAtLaunch else {
                     print("PlaybackManager: ignoring a Spotify failure from a source already left — \(error)")
                     return
                 }
                 let spotifyError = error as? SpotifyError
-                self.showSpotifyError(spotifyError?.errorDescription ?? error.localizedDescription)
-                if spotifyError == .noActiveDevice {
-                    self.isPlaying = false
-                    self.syncRemoteClock()
+                if !self.isSpotifyOfflineMode, let prompt = Self.spotifyPrompt(for: error) {
+                    self.raiseSpotifyPrompt(prompt)
+                } else {
+                    self.showSpotifyError(spotifyError?.errorDescription ?? error.localizedDescription)
+                    if spotifyError == .noActiveDevice {
+                        self.isPlaying = false
+                        self.syncRemoteClock()
+                    }
                 }
                 print("PlaybackManager: Spotify command failed — \(error)")
             }
@@ -1280,6 +1426,9 @@ final class PlaybackManager {
         // long after playback had moved to the phone.
         spotify.noteActiveDevice(id: state.activeDeviceID)
         lastKnownActiveSpotifyDeviceID = state.activeDeviceID
+        lastSpotifyStateFingerprint = """
+        \(state.trackID ?? "none")|\(state.isPlaying)|\(state.progressSeconds)|\(state.activeDeviceID ?? "none")
+        """
 
         if isPlaying != state.isPlaying { isPlaying = state.isPlaying }
         remoteTimeAnchor = (elapsed: state.progressSeconds, at: Date())
@@ -1786,7 +1935,7 @@ final class PlaybackManager {
             isPlaying = true
             remoteTimeAnchor = (elapsed: 0, at: Date())
             syncRemoteClock()
-            performSpotifyCommand { try await $0.play(trackIDs: ids, startAt: index) }
+            performSpotifyCommand(expectingChange: true) { try await $0.play(trackIDs: ids, startAt: index) }
             return
         }
         if isRemoteQueue {
@@ -1815,7 +1964,7 @@ final class PlaybackManager {
             isPlaying = true
             remoteTimeAnchor = (elapsed: currentTime, at: Date())
             syncRemoteClock()
-            performSpotifyCommand { try await $0.resume() }
+            performSpotifyCommand(expectingChange: true) { try await $0.resume() }
             updateNowPlayingPlaybackState()
             return
         }
@@ -1853,7 +2002,7 @@ final class PlaybackManager {
             print("PlaybackManager: pause() reached in Spotify mode")
             isPlaying = false
             syncRemoteClock()
-            performSpotifyCommand { try await $0.pause() }
+            performSpotifyCommand(expectingChange: true) { try await $0.pause() }
             updateNowPlayingPlaybackState()
             return
         }
